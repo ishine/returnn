@@ -34,17 +34,19 @@ install:
   - echo "floatX = float32" >> ~/.theanorc
   - python --version
   - python -c "import numpy; print(numpy.version.full_version)"
-  - python -c "import tensorflow as tf; print(tf.GIT_VERSION, tf.VERSION)"
+  - python -c "import tensorflow as tf; print(tf.__git_version__, tf.__version__)"
   - python -c "import theano; print(theano.__version__)"
 
 # https://docs.travis-ci.com/user/environment-variables/
 # TF tests first, because more relevant (for me), then ordered by alphabet
 env:
   global:
-    - TF_PACKAGE=tensorflow==1.15.0
+    - TF_PACKAGE=tensorflow==2.0.0
   matrix:
+    - TEST=TFEngine TF_PACKAGE=tensorflow==1.15.0
     - TEST=TFEngine
     - TEST=TFNativeOp
+    - TEST=TFNativeOp TF_PACKAGE=tensorflow==1.15.0
     # There are no Python >=3.7 pip packages for older TF versions.
     - TEST=TFNativeOp TF_PACKAGE=tensorflow==1.8.0 PY3_VER=3.6
     - TEST=TFNativeOp TF_PACKAGE=tensorflow==1.4.0 PY3_VER=3.6
