@@ -7,7 +7,7 @@ Wrappers for most relevant NativeOp ops.
 from __future__ import print_function
 
 import os
-import tensorflow as tf
+from TFUtil import tf
 from threading import RLock
 
 import NativeOp

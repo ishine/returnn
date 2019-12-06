@@ -5,7 +5,7 @@ Defines multiple recurrent layers, most importantly :class:`RecLayer`.
 
 from __future__ import print_function
 
-import tensorflow as tf
+from TFUtil import tf
 import typing
 from tensorflow.python.ops.nn import rnn_cell
 from TFNetwork import LayerNotFound

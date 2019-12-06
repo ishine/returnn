@@ -4,7 +4,7 @@ This provides ops as wrappers around OpenFst.
 
 import os
 import platform
-import tensorflow as tf
+from TFUtil import tf
 
 returnn_dir = os.path.dirname(os.path.abspath(__file__))
 openfst_dir = returnn_dir + "/extern/openfst"

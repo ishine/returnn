@@ -28,7 +28,7 @@ finally:
 
 import logging
 logging.getLogger('tensorflow').disabled = True
-import tensorflow as tf
+from TFUtil import tf
 
 from TFNativeOp import *
 from TFUtil import is_gpu_available, get_available_gpu_min_compute_capability, CudaEnv

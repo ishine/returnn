@@ -4,7 +4,7 @@ Like SprintErrorSignals.py but for TensorFlow.
 """
 
 from SprintErrorSignals import SprintInstancePool
-import tensorflow as tf
+from TFUtil import tf
 
 
 def py_get_sprint_automata_for_batch(sprint_opts, tags):

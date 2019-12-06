@@ -6,7 +6,7 @@ and provides a TF op to use them.
 
 import sys
 import os
-import tensorflow as tf
+from TFUtil import tf
 
 returnn_dir = os.path.dirname(os.path.abspath(__file__))
 kenlm_dir = returnn_dir + "/extern/kenlm"

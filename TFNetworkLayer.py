@@ -6,7 +6,7 @@ and many canonical basic layers.
 
 from __future__ import print_function
 
-import tensorflow as tf
+from TFUtil import tf
 import contextlib
 import typing
 import TFUtil
@@ -9435,9 +9435,9 @@ class TripletLoss(Loss):
   def __init__(self, margin, multi_view_training=False, **kwargs):
     super(TripletLoss, self).__init__(**kwargs)
     """
-    :param float margin: how much the distance between instances of the same class 
+    :param float margin: how much the distance between instances of the same class
       should be smaller then distances between instances of different classes.
-    :param bool multi_view_training: True if we have a pair of inputs (x_a, x_s, x_d) 
+    :param bool multi_view_training: True if we have a pair of inputs (x_a, x_s, x_d)
       extracted from two different data representations (i.e. acoustic and orthographic)
     """
     self.margin = margin

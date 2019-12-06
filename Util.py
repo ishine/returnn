@@ -148,7 +148,7 @@ class BackendEngine:
     except ImportError:
       pass
     try:
-      import tensorflow
+      _import_tensorflow()
       return cls.TensorFlow
     except ImportError:
       pass
@@ -177,6 +177,18 @@ class BackendEngine:
     :rtype: bool
     """
     return cls.get_selected_engine() == cls.TensorFlow
+
+
+def _import_tensorflow():
+  """
+  Small helper to make sure TF is imported the right way,
+  and we do the correct early setup before it is used.
+  """
+  try:
+    import tensorflow.compat.v1 as tf
+    tf.disable_eager_execution()  # must be called very early
+  except ImportError:
+    import tensorflow as tf
 
 
 def get_model_filename_postfix():
@@ -354,6 +366,7 @@ def describe_tensorflow_version():
     import tensorflow as tf
   except ImportError:
     return "<TensorFlow ImportError>"
+  _import_tensorflow()
   try:
     tdir = os.path.dirname(tf.__file__)
   except Exception as e:
@@ -379,6 +392,7 @@ def get_tensorflow_version_tuple():
   :return: tuple of ints, first entry is the major version
   :rtype: tuple[int]
   """
+  _import_tensorflow()
   import tensorflow as tf
   import re
   return tuple([int(re.sub('(-rc[0-9]|-dev[0-9]*)', '', s)) for s in tf.__version__.split(".")])

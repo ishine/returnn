@@ -143,7 +143,7 @@ except ImportError:
 from threading import Thread, Condition
 
 import numpy
-import tensorflow as tf
+from TFUtil import tf
 from tensorflow.python.ops.data_flow_ops import StagingArea
 
 from Dataset import Dataset, BatchSetGenerator

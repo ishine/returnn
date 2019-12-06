@@ -7,7 +7,6 @@ from __future__ import print_function
 import logging
 logging.getLogger('tensorflow').disabled = True
 
-import tensorflow as tf
 import sys
 import os
 
@@ -16,6 +15,7 @@ sys.path += [os.path.dirname(os.path.abspath(__file__)) + "/.."]
 
 from TFEngine import *
 import TFUtil
+import Util
 from TFNetwork import ExternData
 from Config import Config
 from nose.tools import assert_equal, assert_is_instance
@@ -42,7 +42,7 @@ except ImportError:
   print("no faulthandler")
 
 
-print("TF version:", tf.VERSION)
+print("TF version:", Util.describe_tensorflow_version())
 
 
 @contextlib.contextmanager

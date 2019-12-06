@@ -6,7 +6,13 @@ Also provides :class:`Data`.
 
 from __future__ import print_function, division
 
-import tensorflow as tf
+try:
+  # https://www.tensorflow.org/guide/migrate
+  import tensorflow.compat.v1 as tf
+  tf.disable_eager_execution()
+  tf.disable_v2_tensorshape()
+except ImportError:
+  import tensorflow as tf
 from tensorflow.python.client import device_lib
 from tensorflow.python.ops import init_ops
 import contextlib

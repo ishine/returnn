@@ -5,7 +5,7 @@ Defines the :class:`TFNetwork` and :class:`ExternData`.
 
 from __future__ import print_function
 
-import tensorflow as tf
+from TFUtil import tf
 import sys
 import re
 import numpy

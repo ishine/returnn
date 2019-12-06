@@ -7,7 +7,7 @@ and model param update logic in general.
 from __future__ import print_function
 
 import typing
-import tensorflow as tf
+from TFUtil import tf
 from tensorflow.python.training.optimizer import Optimizer
 from tensorflow.python.ops import resource_variable_ops
 
@@ -490,7 +490,7 @@ class WrapOptimizer:
     optimizer_opts["learning_rate"] = lr
     print("Create optimizer %s with options %r." % (optim_class, optimizer_opts), file=log.v2)
     optimizer = optim_class(**optimizer_opts)
-    assert isinstance(optimizer, tf.train.Optimizer)
+    assert isinstance(optimizer, Optimizer)
     return optimizer
 
   def _create_default_optimizer(self):
@@ -576,7 +576,7 @@ class WrapOptimizer:
     :rtype: tf.Operation
     """
     optimizer = self.optimizers[opt_key]
-    assert isinstance(optimizer, tf.train.Optimizer)
+    assert isinstance(optimizer, Optimizer)
     if accum_grad_multiple_num_steps >= 1:
       return tf.cond(
         tf.equal(
@@ -595,7 +595,7 @@ class WrapOptimizer:
     from collections import OrderedDict
     res = OrderedDict()
     for key, optimizer in self.optimizers.items():
-      assert isinstance(optimizer, tf.train.Optimizer)
+      assert isinstance(optimizer, Optimizer)
       res[key] = optimizer.get_slot_names()
     return res
 
@@ -1221,7 +1221,7 @@ class CustomAdamOptimizer(BaseCustomOptimizer):
     return tf.group(*update_ops + [update_beta1, update_beta2], name=name_scope)
 
 
-class AMSGradOptimizer(tf.train.Optimizer):
+class AMSGradOptimizer(Optimizer):
   """
   https://colab.research.google.com/notebook#fileId=1xXFAuHM2Ae-OmF5M8Cn9ypGCa_HHBgfG&scrollTo=N1-2wPHN1Otn
   https://openreview.net/pdf?id=ryQu7f-RZ

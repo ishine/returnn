@@ -24,7 +24,7 @@ except ImportError:
   from queue import Queue
 
 import numpy
-import tensorflow as tf
+from TFUtil import tf
 from tensorflow.python.client import timeline
 
 from EngineBase import EngineBase
