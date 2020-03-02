@@ -11,7 +11,7 @@ import contextlib
 import typing
 import TFUtil
 from Util import unicode, NotSpecified, CollectionReadCheckCovered
-from TFUtil import Data, SearchBeam, OutputWithActivation, CustomUpdate, dimshuffle, swapaxes
+from TFUtil import Data, SearchBeam, OutputWithActivation, CustomUpdate, dimshuffle, swapaxes, reuse_name_scope
 from Log import log
 
 
@@ -1134,7 +1134,7 @@ class LayerBase(object):
       tf.nn.batch_normalization()
       https://github.com/deepmind/sonnet/blob/master/sonnet/python/modules/batch_norm.py
     """
-    with tf.variable_scope("batch_norm"):
+    with reuse_name_scope(self.get_absolute_name_scope_prefix() + "batch_norm", absolute=True):
       if masked_time:
         x = data.get_placeholder_flattened(keep_dims=True)
         mean, variance = tf.nn.moments(x, axes=[0], keep_dims=True)
@@ -3880,6 +3880,112 @@ class MergeDimsLayer(_ConcatInputLayer):
     return data
 
 
+class SplitLayer(_ConcatInputLayer):
+  """
+  Splits one axis into multiple parts, via tf.split.
+  self.output is simply the input copied.
+  Each part can be accessed via the sublayers "/%i".
+  """
+  layer_class = "split"
+
+  def __init__(self, axis=None, num_splits=None, size_splits=None, **kwargs):
+    """
+    :param str|None axis: feature axis by default
+    :param int|None num_splits:
+    :param list[int]|None size_splits:
+    """
+    assert num_splits or size_splits, "%s: provide either num_splits or size_splits" % self
+    super(SplitLayer, self).__init__(**kwargs)
+    self.output = self.input_data
+    self.axis, self.size_splits = self._get_axis_size_splits_num_splits(
+      input_data=self.input_data, axis=axis, num_splits=num_splits, size_splits=size_splits,
+      err_prefix=self)
+    self.splits = tf.split(self.output.placeholder, self.size_splits, axis=self.axis)
+    assert len(self.splits) == len(self.size_splits)
+    self._sub_layers = {"%i" % i: self._make_split_layer(i) for i in range(len(self.splits))}
+
+  @classmethod
+  def _get_axis_size_splits_num_splits(cls, input_data, axis=None, num_splits=None, size_splits=None, err_prefix=None):
+    """
+    :param Data input_data:
+    :param str|None axis: feature axis by default
+    :param int|None num_splits:
+    :param list[int]|None size_splits:
+    :param object err_prefix:
+    :return: axis, size_splits
+    :rtype: (int, list[int])
+    """
+    assert num_splits or size_splits, "%s: provide either num_splits or size_splits" % err_prefix
+    if axis is None:
+      axis = "feature"
+    axis = input_data.get_axis_from_description(axis, allow_int=False)
+    dim = input_data.batch_shape[axis]
+    assert isinstance(dim, int), "%s: expects static axis %s in %r" % (err_prefix, axis, input_data)
+    if num_splits:
+      assert dim % num_splits == 0, "%s: expects multiple of %i in dim %i in %r" % (
+        err_prefix, num_splits, dim, input_data)
+      size_splits = [dim // num_splits for _ in range(num_splits)]
+    else:
+      if not isinstance(size_splits, (list, tuple)):
+        raise TypeError("%s: invalid type num_or_size_splits %r" % (err_prefix, size_splits))
+      size_splits = list(size_splits)
+      assert sum(size_splits) == dim, "%s: invalid num_or_size_splits %r for dim %i in %r" % (
+        err_prefix, size_splits, dim, input_data)
+    return axis, size_splits
+
+  def _make_split_layer(self, idx):
+    """
+    :param int idx:
+    :rtype: LayerBase
+    """
+    out = self.output.copy(name="%s/%i_output" % (self.name, idx))
+    axis_wo_b = out.get_batch_axis_excluding_batch(self.axis)
+    shape = list(out.shape)
+    shape[axis_wo_b] = self.size_splits[idx]
+    out.shape = tuple(shape)
+    if self.axis == self.output.feature_dim_axis:
+      out.dim = self.size_splits[idx]
+    out.placeholder = self.splits[idx]
+    out.sanity_check()
+    return InternalLayer(name="%s/%i" % (self.name, idx), network=self.network, output=out)
+
+  def get_sub_layer(self, layer_name):
+    """
+    :param str layer_name:
+    :rtype: LayerBase|None
+    """
+    return self._sub_layers.get(layer_name, None)
+
+  @classmethod
+  def get_sub_layer_out_data_from_opts(cls, layer_name, parent_layer_kwargs):
+    """
+    :param str layer_name: name of the sub_layer (right part of '/' separated path)
+    :param dict[str] parent_layer_kwargs: kwargs for the parent layer (as kwargs in cls.get_out_data_from_opts())
+    :return: Data template, network and the class type of the sub-layer
+    :rtype: (Data, TFNetwork, type)|None
+    """
+    try:
+      idx = int(layer_name)
+    except ValueError:
+      return None
+    name = parent_layer_kwargs.get("name", "<unknown>")
+    out = get_concat_sources_data_template(parent_layer_kwargs["sources"], name="%s_output" % name)
+    axis, size_splits = cls._get_axis_size_splits_num_splits(
+      input_data=out,
+      axis=parent_layer_kwargs.get("axis", None),
+      num_splits=parent_layer_kwargs.get("num_splits", None),
+      size_splits=parent_layer_kwargs.get("size_splits", None),
+      err_prefix="%s/%s" % (name, layer_name))
+    out = out.copy(name="%s/%i_output" % (name, idx))
+    axis_wo_b = out.get_batch_axis_excluding_batch(axis)
+    shape = list(out.shape)
+    shape[axis_wo_b] = size_splits[idx]
+    out.shape = tuple(shape)
+    if axis == out.feature_dim_axis:
+      out.dim = size_splits[idx]
+    return out, parent_layer_kwargs["network"], InternalLayer
+
+
 class SplitDimsLayer(_ConcatInputLayer):
   """
   Splits one axis into multiple axes.
@@ -4766,7 +4872,7 @@ class ReduceLayer(_ConcatInputLayer):
   def __init__(self, mode, axes=None, axis=None, keep_dims=False, enforce_batch_dim_axis=None, use_time_mask=None,
                **kwargs):
     """
-    :param str mode: "sum" or "max", "argmin", "min", "argmin", or "mean"
+    :param str mode: "sum" or "max", "argmin", "min", "argmax", "mean", "logsumexp"
     :param int|list[int]|str axes: One axis or multiple axis to reduce.
       It accepts the special tokens "B"|"batch", "spatial", "spatial_except_time", or "F"|"feature",
       and it is strongly recommended to use some of these symbolic names.
@@ -4790,8 +4896,6 @@ class ReduceLayer(_ConcatInputLayer):
     if "n_out" in kwargs:
       assert kwargs["n_out"] == self.output.dim
     assert "out_type" not in kwargs
-    mode = mode.lower()
-    assert mode in ["max", "argmax", "min", "argmin", "sum", "avg", "mean"]
     assert not self.input_data.sparse
     x = self.input_data
     if enforce_batch_dim_axis is not None and x.batch_dim_axis != enforce_batch_dim_axis:
@@ -4803,24 +4907,19 @@ class ReduceLayer(_ConcatInputLayer):
       else:
         use_time_mask = False
     assert isinstance(use_time_mask, bool)
-    if mode == "max":
-      f = tf.reduce_max
-    elif mode == "argmax":
-      f = tf.argmax
-    elif mode == "min":
-      f = tf.reduce_min
-    elif mode == "argmin":
-      f = tf.argmin
-    elif mode == "sum":
-      f = tf.reduce_sum
-    elif mode in ["avg", "mean"]:
-      f = tf.reduce_mean
-    else:
-      raise Exception("invalid mode %r" % mode)
+    mode = mode.lower()
+    if mode == "avg":  # alias
+      mode = "mean"
+    reduce_abs_funcs = {name: getattr(tf, "reduce_%s" % name) for name in ["max", "min", "sum", "logsumexp"]}
+    reduce_rel_func = {"mean": tf.reduce_mean}
+    arg_funcs = {name: getattr(tf, name) for name in ["argmax", "argmin"]}
+    funcs = dict(list(reduce_abs_funcs.items()) + list(reduce_rel_func.items()) + list(arg_funcs.items()))
+    assert mode in funcs, "%s: invalid mode %r. choose from: %r" % (self, mode, funcs)
+    f = funcs[mode]
     x_ = x.placeholder
     # Check if we should ignore some frames, e.g. via masking.
     if use_time_mask:
-      if f in (tf.reduce_sum, tf.reduce_min, tf.reduce_max) or (f == tf.reduce_mean and axes == [x.time_dim_axis]):
+      if mode in reduce_abs_funcs or (mode in reduce_rel_func and axes == [x.time_dim_axis]):
         # For sum, the fastest and simplest way is masking.
         for axis in axes:
           if axis == x.batch_dim_axis:
@@ -4834,12 +4933,13 @@ class ReduceLayer(_ConcatInputLayer):
             mask, [i for i in range(x.batch_ndim) if i not in [x.batch_dim_axis, axis]])  # e.g. (B,1,T) with axis=-1
           mask = tf.logical_and(mask, tf.ones_like(x_, dtype=mask.dtype))
 
+          zeros = tf.zeros_like(x.placeholder)
           replacement_value = {
-            tf.reduce_mean: tf.zeros_like(x.placeholder),
-            tf.reduce_sum: tf.zeros_like(x.placeholder),
-            tf.reduce_min: tf.zeros_like(x.placeholder) + x.placeholder.dtype.max,
-            tf.reduce_max: tf.zeros_like(x.placeholder) + x.placeholder.dtype.min
-          }
+            tf.reduce_mean: zeros,
+            tf.reduce_sum: zeros,
+            tf.reduce_logsumexp: zeros + x.placeholder.dtype.min,
+            tf.reduce_min: zeros + x.placeholder.dtype.max,
+            tf.reduce_max: zeros + x.placeholder.dtype.min}
 
           x_ = tf.where(mask, x_, replacement_value[f], "x_masked_axis_%i" % axis)
           if f == tf.reduce_mean:
@@ -4857,7 +4957,7 @@ class ReduceLayer(_ConcatInputLayer):
                   for a in axes if a != x.time_dim_axis]
           x = x.copy_time_flattened()
           x_ = x.placeholder
-    if f in (tf.argmax, tf.argmin):
+    if mode in arg_funcs:
       assert len(axes) == 1, "For argmax/argmin, only one reduction axis is supported"
       y = f(x_, axis=axes[0], output_type=tf.int32)
       # argmax and argmin don't support keep_dims argument
@@ -5570,11 +5670,13 @@ class DotLayer(LayerBase):
     b_out = self.sources[1].output.copy_as_batch_major()
     a_reduce_axes = a_out.get_axes_from_description(red1)
     b_reduce_axes = b_out.get_axes_from_description(red2)
-    assert a_reduce_axes and b_reduce_axes
+    assert a_reduce_axes and b_reduce_axes, "%s: sources %r, red1 %r, red2 %r" % (self, self.sources, red1, red2)
     a_var_axes = a_out.get_axes_from_description(var1)
     b_var_axes = b_out.get_axes_from_description(var2)
-    assert not set(a_reduce_axes).intersection(a_var_axes)
-    assert not set(b_reduce_axes).intersection(b_var_axes)
+    assert not set(a_reduce_axes).intersection(a_var_axes), "%s: sources %r, red1 %r, red2 %r, var1 %r, var2 %r" % (
+      self, self.sources, red1, red2, var1, var2)
+    assert not set(b_reduce_axes).intersection(b_var_axes), "%s: sources %r, red1 %r, red2 %r, var1 %r, var2 %r" % (
+      self, self.sources, red1, red2, var1, var2)
     a_rem_axes = [i for i in range(a_out.batch_ndim) if i not in a_var_axes + a_reduce_axes]
     b_rem_axes = [i for i in range(b_out.batch_ndim) if i not in b_var_axes + b_reduce_axes]
     transpose_a = bool(a_var_axes and a_reduce_axes[0] < a_var_axes[0])
@@ -5594,7 +5696,8 @@ class DotLayer(LayerBase):
     b_shape = [b_out.batch_shape[i] or b_shape[i] for i in range(b_out.batch_ndim)]
     a_rem_dims = [a_shape[i] for i in a_rem_axes]
     b_rem_dims = [b_shape[i] for i in b_rem_axes]
-    assert len(a_rem_axes) == len(b_rem_axes), "remaining shared (batch) axes do not match"
+    assert len(a_rem_axes) == len(b_rem_axes), "%s: remaining shared (batch) axes do not match. sources %r" % (
+      self, self.sources)
     assert all([
       isinstance(d1, tf.Tensor) or isinstance(d2, tf.Tensor) or d1 == d2
       for (d1, d2) in zip(a_rem_dims, b_rem_dims)])
@@ -5681,7 +5784,7 @@ class DotLayer(LayerBase):
     assert not a_out.beam or not b_out.beam or a_out.beam == b_out.beam
     a_reduce_axes = a_out.get_axes_from_description(red1)
     b_reduce_axes = b_out.get_axes_from_description(red2)
-    assert a_reduce_axes and b_reduce_axes
+    assert a_reduce_axes and b_reduce_axes, "%s: sources %r, red1 %r, red2 %r" % (name, sources, red1, red2)
     a_var_axes = a_out.get_axes_from_description(var1)
     b_var_axes = b_out.get_axes_from_description(var2)
     assert not set(a_reduce_axes).intersection(a_var_axes)
@@ -6869,6 +6972,18 @@ class SubnetworkLayer(LayerBase):
           network=network, name="%s/%s" % (name, loss.name)))
     return losses
 
+  def get_sub_layer(self, layer_name):
+    """
+    :param str layer_name: name of the sub_layer (right part of '/' separated path)
+    :return: the sub_layer addressed in layer_name or None if no sub_layer exists
+    :rtype: LayerBase|None
+    """
+    from TFNetwork import LayerNotFound
+    try:
+      return self.subnetwork.get_layer(layer_name)
+    except LayerNotFound:
+      return None
+
   def get_last_hidden_state(self, key):
     """
     :param int|str|None key: also the special key "*"
@@ -7709,7 +7824,7 @@ class HDFDumpLayer(LayerBase):
       try:
         if not self.hdf_writer:
           self.hdf_writer = SimpleHDFWriter(
-            filename=filename, dim=data.dim, ndim=ndim,
+            filename=self.filename, dim=data.dim, ndim=ndim,
             labels=labels,
             extra_type={
               key: (
@@ -8406,7 +8521,7 @@ class BinaryCrossEntropyLoss(Loss):
     """
     with tf.name_scope("loss_frame_error"):
       targets_bool = tf.cast(self.target_flat, tf.float32) > 0.5
-      output_bool = self.output_flat > 0.  # logits
+      output_bool = tf.greater(self.output_flat, 0.)  # logits
       not_equal = tf.not_equal(output_bool, targets_bool)
       return self.reduce_func(tf.cast(not_equal, tf.float32)) * (1.0 / (self.output.dim or 1))
 

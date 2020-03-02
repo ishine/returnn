@@ -895,9 +895,9 @@ class Dataset(object):
     :rtype: str
     """
     labels = self.labels[key]
-    if len(labels) < 1000 and all([len(l) == 1 for l in labels]):
+    if len(labels) < 1000 and all([len(label) == 1 for label in labels]):
       # are these actually raw bytes? -> assume utf8
-      if all([ord(l) <= 255 for l in labels]):
+      if all([ord(label) <= 255 for label in labels]):
         try:
           if PY3:
             return bytes([ord(labels[c]) for c in data]).decode("utf8")
@@ -945,7 +945,7 @@ class Dataset(object):
     while self.is_less_than_num_seqs(s):
       length = self.get_seq_length(s)
       if chunk_size == 0:
-        yield (s, NumbersDict.constant_like(0, numbers_dict=length), length)
+        yield s, NumbersDict.constant_like(0, numbers_dict=length), length
       else:
         default_key = "data"
         if used_data_keys is not None:
@@ -960,6 +960,17 @@ class Dataset(object):
             for k in used_data_keys:
               chunk_size[k] = max(int(chunk_size_orig[k] * chunking_variance), 1)
               chunk_step[k] = max(int(chunk_step_orig[k] * chunking_variance), 1)
+            # In case there are data keys with different chunk sizes,
+            # make sure we keep the original ratio.
+            smallest_key = [
+              k for k in sorted(used_data_keys, key=lambda key: (chunk_step_orig[key], key))
+              if chunk_step_orig[k] > 0][0]
+            for k in used_data_keys:
+              if chunk_size_orig[k] > chunk_size_orig[smallest_key]:
+                if chunk_size_orig[k] % chunk_size_orig[smallest_key] == 0:
+                  ratio = chunk_size_orig[k] // chunk_size_orig[smallest_key]
+                  chunk_size[k] = chunk_size[smallest_key] * ratio
+                  chunk_step[k] = chunk_step[smallest_key] * ratio
         assert chunk_step[default_key] > 0
         t = NumbersDict.constant_like(0, numbers_dict=length)
         # There are usually the 'data' (input) and 'classes' (targets) data-keys in `length` but there can be others.
@@ -977,10 +988,15 @@ class Dataset(object):
           if chunk_step[key] == chunk_step[default_key]:
             raise Exception("Chunking with multiple data-keys of different length: %r" % length)
           else:
-            nr_of_full_chunks_key = (length[key] - chunk_size[key]) // chunk_step[key] + 1
-            nr_of_full_chunks_default_key = (
-              (length[default_key] - chunk_size[default_key]) // chunk_step[default_key] + 1)
-            assert nr_of_full_chunks_key == nr_of_full_chunks_default_key
+            limit = limit_default = 1
+            if self.min_chunk_size == chunk_size[default_key]:
+              limit = chunk_size[key]
+              limit_default = chunk_size[default_key]
+            nr_of_chunks = (length[key] - limit) // chunk_step[key] + 1
+            nr_of_chunks_default = (length[default_key] - limit_default) // chunk_step[default_key] + 1
+            assert nr_of_chunks == nr_of_chunks_default, (
+              "%s: iterate seqs with chunking: length %r, chunk size/step %r/%r (min %r), key %r (default %r)" % (
+                self, length, chunk_size, chunk_step, self.min_chunk_size, key, default_key))
         while length[default_key] > t[default_key]:
           chunk_start = NumbersDict(t)
           chunk_end = NumbersDict.min([t + chunk_size, length])
@@ -990,7 +1006,7 @@ class Dataset(object):
           if length.value is None:
             chunk_start.value = None
             chunk_end.value = None
-          yield (s, chunk_start, chunk_end)
+          yield s, chunk_start, chunk_end
           t += chunk_step
           if length[default_key] - t[default_key] <= self.min_chunk_size:
             break
