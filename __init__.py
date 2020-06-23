@@ -27,6 +27,10 @@ _my_dir = _os.path.dirname(_os.path.abspath(__file__))
 _mod_cache = {}  # mod_name -> mod
 
 
+from .setup import get_version_str as _get_version_str
+__version__ = _get_version_str(fallback="1.0.0")
+
+
 def _setup():
   """
   This does the setup, such that all the modules become available in the `returnn` package.
@@ -36,9 +40,12 @@ def _setup():
   import sys
 
   for fn in sorted(os.listdir(_my_dir)):
-    mod_name, ext = os.path.splitext(os.path.basename(fn))
-    if ext != ".py":
-      continue
+    if os.path.isdir("%s/%s" % (_my_dir, fn)) and os.path.exists("%s/%s/__init__.py" % (_my_dir, fn)):
+      mod_name = fn
+    else:
+      mod_name, ext = os.path.splitext(fn)
+      if ext != ".py":
+        continue
     if mod_name.startswith("__"):
       continue
     if mod_name in sys.modules:
@@ -62,8 +69,15 @@ class _LazyLoader(_types.ModuleType):
   Code borrowed from TensorFlow, and simplified, and extended.
   """
   def __init__(self, name):
+    """
+    :param str name:
+    """
     super(_LazyLoader, self).__init__(name)
-    self.__file__ = "%s/%s.py" % (_my_dir, name)
+    fn = "%s/%s.py" % (_my_dir, name)
+    if not _os.path.exists(fn):
+      fn = "%s/%s/__init__.py" % (_my_dir, name)
+      assert _os.path.exists(fn)
+    self.__file__ = fn
 
   def _load(self):
     name = self.__name__

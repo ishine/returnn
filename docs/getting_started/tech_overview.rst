@@ -1,7 +1,7 @@
 .. _tech_overview:
 
 ======================
-Technological overview
+Technological Overview
 ======================
 
 RETURNN is mostly used as a tool where ``rnn.py`` (:mod:`rnn`) is the main entry point
@@ -10,13 +10,32 @@ To get an idea about how it works, it helps to follow roughly the execution path
 starting in :mod:`rnn`, esp. in :py:func:`rnn.main`.
 In all cases, the code itself should be checked for details and comments.
 
-So far, there are two calculation backends: Theano and TensorFlow,
+The main tasks of RETURNN are:
+
+    - Network construction via nested dictionaries
+    - Data loading with predefined and extendable dataset objects
+    - Automatic management of layer outputs (such as tensor axes and time dimensions) with a Data object
+    - Support of dynamic training schemes that allow for network structure and parameter changes during training
+    - Managing the losses and optimizer functions
+    - Learning rate scheduling based on training scores
+
+So far, RETURNN supports two calculation backends: Theano and TensorFlow,
 where Theano was the first backend, thus Theano-specific code files are currently not prefix
 but TensorFlow specific files are prefixed with ``TF``.
-This is implemented separately for both Theano and TensorFlow:
+It is recommended to stick to the TensorFlow backend, as Theano is no longer supported.
+
+
+Structure
+---------
+
+Many components are implemented separately for both Theano and TensorFlow:
 
 - The engine for high-level logic, although a bit is shared.
   :mod:`Engine`, :mod:`EngineTask` for Theano and :mod:`TFEngine` for TensorFlow.
+  For TensorFlow the engine contains the high level methods for training, forward pass, and other
+  executed tasks. It keeps track of the network, devices, models and the updater function, and is the main connection
+  between all these components. :mod:`TFEngine` also contains the :class:`TFEngine.Runner` which is responsible for
+  managing the TensorFlow session.
 - Network topology construction which constructs the computation graph
   for training or just forwarding.
   :mod:`Network`, :mod:`TFNetwork`.
@@ -27,7 +46,7 @@ This is implemented separately for both Theano and TensorFlow:
   and :mod:`TFNetworkLayer`, :mod:`TFNetworkRecLayer` for TensorFlow.
   This also means that Theano and TensorFlow don't support the same layers and
   even parameters can be different.
-- Some utilities :mod:`TheanoUtil` and :mod:`TFUtil`.
+- Some utilities :mod:`TheanoUtil` and :mod:`TFUtil`, which contains the :class:`TFUtil.Data` class.
 - Multi-GPU logic. :mod:`Device`, :mod:`EngineTask` for Theano and not yet implemented for TensorFlow.
 
 All the rest is shared for all backends, which mostly is:
@@ -59,10 +78,8 @@ Execution guide
   (:py:func:`Engine.Engine.train` or :py:func:`TFEngine.Engine.train`), :ref:`tech_engine_train`.
 
 
-.. _tech_net_construct:
-
-Network structure construction
-------------------------------
+Network Construction
+--------------------
 
 The network structure which defines the model topology is defined by the config ``network`` option,
 which is a dict, where each entry is a layer specification, which itself is a dict containing
@@ -99,25 +116,6 @@ Here is a 2 layer unidirectional LSTM network:
 
 In TensorFlow, that would use the layer class :py:class:`TFNetworkRecLayer.RecLayer`
 which will handle the argument ``unit``.
-
-And here is a 3 layer bidirectional LSTM network:
-
-.. code-block:: python
-
-    network = {
-    "lstm0_fw" : { "class": "rec", "unit": "lstm", "n_out" : 500, "dropout": 0.1, "L2": 0.01, "direction": 1 },
-    "lstm0_bw" : { "class": "rec", "unit": "lstm", "n_out" : 500, "dropout": 0.1, "L2": 0.01, "direction": -1 },
-
-    "lstm1_fw" : { "class": "rec", "unit": "lstm", "n_out" : 500, "dropout": 0.1, "L2": 0.01, "direction": 1, "from" : ["lstm0_fw", "lstm0_bw"] },
-    "lstm1_bw" : { "class": "rec", "unit": "lstm", "n_out" : 500, "dropout": 0.1, "L2": 0.01, "direction": -1, "from" : ["lstm0_fw", "lstm0_bw"] },
-
-    "lstm2_fw" : { "class": "rec", "unit": "lstm", "n_out" : 500, "dropout": 0.1, "L2": 0.01, "direction": 1, "from" : ["lstm1_fw", "lstm1_bw"] },
-    "lstm2_bw" : { "class": "rec", "unit": "lstm", "n_out" : 500, "dropout": 0.1, "L2": 0.01, "direction": -1, "from" : ["lstm1_fw", "lstm1_bw"] },
-
-    "output" :   { "class" : "softmax", "loss" : "ce", "from" : ["lstm2_fw", "lstm2_bw"] }
-    }
-
-
 
 .. _tech_engine_train:
 

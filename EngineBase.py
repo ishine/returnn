@@ -75,18 +75,25 @@ class EngineBase(object):
     load_model_epoch_filename = config.value('load', '')
     if load_model_epoch_filename.endswith(".meta"):
       load_model_epoch_filename = load_model_epoch_filename[:-len(".meta")]
+    elif load_model_epoch_filename.endswith(".index"):
+      load_model_epoch_filename = load_model_epoch_filename[:-len(".index")]
     if load_model_epoch_filename:
       assert os.path.exists(load_model_epoch_filename + get_model_filename_postfix())
 
     import_model_train_epoch1 = config.value('import_model_train_epoch1', '')
     if import_model_train_epoch1.endswith(".meta"):
       import_model_train_epoch1 = import_model_train_epoch1[:-len(".meta")]
+    elif import_model_train_epoch1.endswith(".index"):
+      import_model_train_epoch1 = import_model_train_epoch1[:-len(".index")]
     if import_model_train_epoch1:
       assert os.path.exists(import_model_train_epoch1 + get_model_filename_postfix())
 
     existing_models = cls.get_existing_models(config)
-    if not load_model_epoch_filename:
-      load_epoch = config.int("load_epoch", -1)
+    load_epoch = config.int("load_epoch", -1)
+    if load_model_epoch_filename:
+      if load_epoch <= 0:
+        load_epoch = model_epoch_from_filename(load_model_epoch_filename)
+    else:
       if load_epoch > 0:  # ignore if load_epoch == 0
         assert load_epoch in existing_models
         load_model_epoch_filename = existing_models[load_epoch]
@@ -96,10 +103,11 @@ class EngineBase(object):
     # For training, we first consider existing models before we take the 'load' into account when in auto epoch mode.
     # In all other cases, we use the model specified by 'load'.
     if load_model_epoch_filename and (config.value('task', 'train') != 'train' or start_epoch is not None):
-      epoch = model_epoch_from_filename(load_model_epoch_filename)
       if config.value('task', 'train') == 'train' and start_epoch is not None:
         # Ignore the epoch. To keep it consistent with the case below.
         epoch = None
+      else:
+        epoch = load_epoch
       epoch_model = (epoch, load_model_epoch_filename)
 
     # In case of training, always first consider existing models.
@@ -117,7 +125,7 @@ class EngineBase(object):
     elif load_model_epoch_filename:
       # Don't use the model epoch as the start epoch in training.
       # We use this as an import for training.
-      epoch_model = (model_epoch_from_filename(load_model_epoch_filename), load_model_epoch_filename)
+      epoch_model = (load_epoch, load_model_epoch_filename)
 
     else:
       epoch_model = (None, None)

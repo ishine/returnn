@@ -1,4 +1,5 @@
 import tensorflow as tf
+import TFCompat
 from TFNetworkLayer import LayerBase, _ConcatInputLayer, Loss, get_concat_sources_data_template
 from TFNetworkRecLayer import RecLayer
 from TFUtil import Data, sparse_labels_with_seq_lens
@@ -37,7 +38,7 @@ class NeuralTransducerLayer(_ConcatInputLayer):
         initializer = get_initializer('glorot_uniform',
                                       seed=self.network.random.randint(2 ** 31),
                                       eval_local_ns={"layer": self})
-        embeddings = self.add_param(tf.get_variable(shape=[n_out, embedding_size], dtype=tf.float32,
+        embeddings = self.add_param(TFCompat.v1.get_variable(shape=[n_out, embedding_size], dtype=tf.float32,
                                                     initializer=initializer, name='nt_embedding'),
                                     trainable=True, saveable=True)
 
@@ -98,7 +99,7 @@ class NeuralTransducerLayer(_ConcatInputLayer):
 
         # Add all trainable params
         with self.var_creation_scope() as scope:
-            self._add_all_trainable_params(tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=scope.name))
+            self._add_all_trainable_params(tf.get_collection(TFCompat.v1.GraphKeys.TRAINABLE_VARIABLES, scope=scope.name))
 
     def build_full_transducer(self, transducer_hidden_units, embeddings, num_outputs, input_block_size,
                               transducer_max_width, encoder_outputs, trans_hidden_init):
@@ -124,7 +125,7 @@ class NeuralTransducerLayer(_ConcatInputLayer):
                 trans_hidden_init = tf.zeros([2, batch_size, transducer_hidden_units], dtype=tf.float32)
 
             # Do some more post processing
-            max_blocks = tf.to_int32(tf.shape(encoder_outputs)[0]/input_block_size)
+            max_blocks = tf.cast(tf.shape(encoder_outputs)[0] // input_block_size, tf.int32)
             transducer_list_outputs = tf.ones([max_blocks, batch_size], dtype=tf.int32) * transducer_max_width
             inference_mode = 1.0
             teacher_forcing_targets = tf.ones([transducer_max_width * max_blocks, batch_size], dtype=tf.int32)
@@ -238,7 +239,7 @@ class NeuralTransducerLayer(_ConcatInputLayer):
         :param int input_block_size: Input block size as specified in the __init__ function.
         :return: tf.tensor A vector the same shape as 'vector'.
         """
-        vector = tf.cast(tf.ceil(tf.cast(vector, tf.float32) / input_block_size), tf.float32) * tf.cast(transducer_max_width, tf.float32)
+        vector = tf.cast(TFCompat.v1.ceil(tf.cast(vector, tf.float32) / input_block_size), tf.float32) * tf.cast(transducer_max_width, tf.float32)
         vector = tf.cast(vector, tf.int32)
 
         return vector
@@ -375,7 +376,7 @@ class NeuralTransducerLoss(Loss):
         targets_lengths = self.target.size_placeholder[0]
 
         # Get alignment info into our targets
-        new_targets, mask = tf.py_func(func=self.get_alignment_from_logits_manager,
+        new_targets, mask = TFCompat.v1.py_func(func=self.get_alignment_from_logits_manager,
                                        inp=[logits, targets, logits_lengths, targets_lengths],
                                        Tout=(tf.int64, tf.bool), stateful=False)
 
@@ -397,10 +398,11 @@ class NeuralTransducerLoss(Loss):
 
         # Check for outliers and set their gradient to 0
         loss_time = tf.reduce_sum(stepwise_cross_entropy, axis=1)
-        mean, variance = tf.nn.moments(stepwise_cross_entropy, axes=[1])
-        loss_mask = tf.to_float(variance > self.max_variance)
-        stepwise_cross_entropy = tf.stop_gradient(tf.multiply(loss_mask, loss_time)) + \
-                                  tf.multiply(tf.to_float(tf.logical_not(tf.cast(loss_mask, tf.bool))), loss_time)
+        mean, variance = TFCompat.v1.nn.moments(stepwise_cross_entropy, axes=[1])
+        loss_mask = tf.cast(tf.greater(variance, self.max_variance), tf.float32)
+        stepwise_cross_entropy = (
+          tf.stop_gradient(tf.multiply(loss_mask, loss_time)) +
+          tf.multiply(tf.cast(tf.logical_not(tf.cast(loss_mask, tf.bool)), tf.float32), loss_time))
 
         if self.debug is True:
             stepwise_cross_entropy = tf.cond(tf.reduce_sum(loss_mask) >= 1,
@@ -611,7 +613,7 @@ class NeuralTransducerLoss(Loss):
             targets_lengths = self.target.size_placeholder[0]
 
             # Get alignment info into our targets
-            new_targets, mask = tf.py_func(func=self.get_alignment_from_logits_manager,
+            new_targets, mask = TFCompat.v1.py_func(func=self.get_alignment_from_logits_manager,
                                            inp=[logits, targets, logits_lengths, targets_lengths],
                                            Tout=(tf.int64, tf.bool), stateful=False)
 
@@ -624,16 +626,16 @@ class NeuralTransducerLoss(Loss):
 
             # Get find seq lens (due to having blank spaces in the modified targets we need to use this method to get
             # the correct seq lens)
-            seq_lens = tf.argmax(tf.cumsum(tf.to_int32(mask), axis=0), axis=0)
+            seq_lens = tf.argmax(tf.cumsum(tf.cast(mask, tf.int32), axis=0), axis=0)
             seq_lens = tf.reshape(seq_lens, shape=[tf.shape(seq_lens)[0]])
 
             logits_sparse = sparse_labels_with_seq_lens(tf.transpose(mod_logits), seq_lens=seq_lens)
             targets_sparse = sparse_labels_with_seq_lens(tf.transpose(new_targets), seq_lens=seq_lens)
-            
+
             e = tf.edit_distance(logits_sparse[0], targets_sparse[0], normalize=False)
             total = tf.reduce_sum(e)
 
-            norm = tf.to_float(tf.reduce_sum(targets_lengths)) / tf.reduce_sum(tf.to_float(mask))
+            norm = tf.cast(tf.reduce_sum(targets_lengths), tf.float32) / tf.reduce_sum(tf.cast(mask, tf.float32))
             total = total * norm
 
             return total

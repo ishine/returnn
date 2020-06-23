@@ -9,6 +9,7 @@ from __future__ import print_function
 import tensorflow as tf
 import contextlib
 import typing
+import TFCompat
 import TFUtil
 from Util import unicode, NotSpecified, CollectionReadCheckCovered
 from TFUtil import Data, SearchBeam, OutputWithActivation, CustomUpdate, dimshuffle, swapaxes, reuse_name_scope
@@ -404,7 +405,7 @@ class LayerBase(object):
     :rtype: list[LayerBase]
     """
     from TFUtil import CollectionKeys
-    coll = tf.get_collection_ref(CollectionKeys.RETURNN_LAYERS)
+    coll = TFCompat.v1.get_collection_ref(CollectionKeys.RETURNN_LAYERS)
     assert isinstance(coll, list)
     return coll
 
@@ -483,20 +484,22 @@ class LayerBase(object):
             # Also, if we are inside a rec layer, and doing search, we also cannot do that.
             if network.is_inside_rec_layer() and not network.search_flag:
               network.get_extern_data(target, mark_data_key_as_used=True)
+            if not network.search_flag:
+              # Also, there are cases when we want to have the target as an explicit layer dep,
+              # e.g. when the target has a beam, to derive the search choices.
+              target_layers[target] = get_layer("data:%s" % target)
     if d.get("initial_output", None):  # see get_rec_initial_output
       initial_output = d["initial_output"]
       if isinstance(initial_output, str):
         if initial_output not in ["zeros", "ones", "var", "keep_over_epoch", "keep_over_epoch_no_init", "apply(0)"]:
           # if initial_output is not a reserved keyword, assume it is a layer
           d['initial_output'] = get_layer(initial_output)
-    if "n_out" not in d and targets and network.eval_flag:
+    if "n_out" not in d and targets:
       # Must be done here now because loss might be set to None later.
       target = targets[0]  # guess using first target
-      if target in target_layers:
-        d["n_out"] = target_layers[target].output.dim
-      else:
-        d["n_out"] = cls._guess_n_out_from_target_and_opt_loss(
-          network=network, target=target, loss_class_name=d.get("loss", None), get_layer=get_layer)
+      d["n_out"] = cls._guess_n_out_from_target_and_opt_loss(
+        network=network, target=target, target_layers=target_layers,
+        loss_class_name=d.get("loss", None), get_layer=get_layer)
     if d.pop("loss_only_on_non_search", None) and network.search_flag:
       d.pop("loss", None)
       d.pop("loss_scale", None)
@@ -521,17 +524,24 @@ class LayerBase(object):
       assert "loss_opts" not in d, "loss not defined, do not set loss_opts"
 
   @classmethod
-  def _guess_n_out_from_target_and_opt_loss(cls, network, target, loss_class_name, get_layer):
+  def _guess_n_out_from_target_and_opt_loss(cls, network, target, target_layers, loss_class_name, get_layer):
     """
     :param TFNetwork.TFNetwork network:
     :param str target: e.g. "classes"
+    :param dict[str,LayerBase] target_layers:
     :param str|None loss_class_name: e.g. "ce" or None
     :param ((str) -> LayerBase) get_layer: function to get or construct another layer
     :return: n_out value
     :rtype: int
     """
-    n_out = cls._static_get_target_value(
-      target=target, network=network, mark_data_key_as_used=False, get_layer=get_layer).dim
+    if target in target_layers:
+      target_data = target_layers[target].output
+    else:
+      target_data = cls._static_get_target_value(
+        target=target, network=network, mark_data_key_as_used=False, get_layer=get_layer)
+      if not target_data:
+        return 1  # dummy value during template construction. this would be corrected later
+    n_out = target_data.dim
     if loss_class_name:
       n_out = get_loss_class(loss_class_name).get_auto_output_layer_dim(n_out)
     return n_out
@@ -716,7 +726,7 @@ class LayerBase(object):
     # There are cases were a dummy layer was created already to create the variables,
     # e.g. see ReuseParams.LazyLayerResolver.
     kwargs = kwargs.copy()
-    kwargs.setdefault("reuse", getattr(tf, "AUTO_REUSE", None))
+    kwargs.setdefault("reuse", getattr(TFCompat.v1, "AUTO_REUSE", None))
 
     param_variational_noise = self.param_variational_noise
     if param_variational_noise is None:
@@ -744,7 +754,7 @@ class LayerBase(object):
         with TFUtil.default_control_flow_ctx():  # make independent from loop/cond
           with TFUtil.reuse_name_scope_of_tensor(param, postfix="_variational_noise", add_tensor_name=True):
             param = self.network.cond_on_train(
-              fn_train=lambda: param + tf.random_normal(
+              fn_train=lambda: param + TFCompat.v1.random_normal(
                 tf.shape(param), dtype=param.dtype.base_dtype,
                 stddev=param_variational_noise,
                 seed=self.network.random.randint(2 ** 31)),
@@ -760,7 +770,7 @@ class LayerBase(object):
       if self.reuse_params:
         var_scope = self.reuse_params.get_variable_scope(base_layer=self)
       else:
-        var_scope = tf.get_variable_scope()
+        var_scope = TFCompat.v1.get_variable_scope()
       if need_custom_getter:
         kwargs["custom_getter"] = layer_custom_getter
       with reuse_name_scope(var_scope, **kwargs) as scope_:
@@ -791,19 +801,19 @@ class LayerBase(object):
     """
     _param = param
     if isinstance(param, tf.Tensor):
-      # This can happen with a custom_getter in tf.get_variable(), e.g. via self.reuse_params.
+      # This can happen with a custom_getter in TFCompat.v1.get_variable(), e.g. via self.reuse_params.
       # Check if we can still find the original variable.
-      from tensorflow.contrib import graph_editor
+      from extern import graph_editor
       import re
-      possible_params = tf.get_collection(
-        tf.GraphKeys.GLOBAL_VARIABLES, scope=re.escape(self.get_absolute_name_scope_prefix()))
+      possible_params = TFCompat.v1.get_collection(
+        TFCompat.v1.GraphKeys.GLOBAL_VARIABLES, scope=re.escape(self.get_absolute_name_scope_prefix()))
       if not possible_params:
         # None found. Just return as-is.
         return param
       all_ops = graph_editor.get_backward_walk_ops([param.op], inclusive=False, control_inputs=False)
       all_1st_tensors = [op.outputs[0] for op in all_ops if len(op.outputs) == 1]
       # noinspection PyProtectedMember
-      possible_params = [p for p in possible_params if p._ref() in all_1st_tensors]
+      possible_params = [p for p in possible_params if TFUtil.var_handle_or_ref(p) in all_1st_tensors]
       if not possible_params:
         # Not found. Just return as-is.
         return param
@@ -811,11 +821,11 @@ class LayerBase(object):
       param = possible_params[0]
     assert isinstance(param, tf.Variable)
     if not self.trainable:
-      trainable_collection_ref = param.graph.get_collection_ref(tf.GraphKeys.TRAINABLE_VARIABLES)
+      trainable_collection_ref = param.graph.get_collection_ref(TFCompat.v1.GraphKeys.TRAINABLE_VARIABLES)
       if param in trainable_collection_ref:
         trainable_collection_ref.remove(param)
     if trainable is None:
-      trainable = param in param.graph.get_collection_ref(tf.GraphKeys.TRAINABLE_VARIABLES)
+      trainable = param in param.graph.get_collection_ref(TFCompat.v1.GraphKeys.TRAINABLE_VARIABLES)
     if saveable is None:
       saveable = True
     if custom_update:
@@ -853,7 +863,7 @@ class LayerBase(object):
     :param dict[str,numpy.ndarray] values_dict:
     :param bool ignore_wrong_shape:
     :param str|None copy_param_mode:
-    :param tf.Session session:
+    :param TFCompat.v1.Session session:
     """
     if callable(self.custom_param_importer):
       self.custom_param_importer(layer=self, values_dict=values_dict, session=session)
@@ -902,7 +912,7 @@ class LayerBase(object):
 
   def get_param_values_dict(self, session):
     """
-    :param tf.Session session:
+    :param TFCompat.v1.Session session:
     :return: dict name -> values
     :rtype: dict[str,numpy.ndarray]
     """
@@ -950,8 +960,10 @@ class LayerBase(object):
     if target.startswith("layer:"):
       if not get_layer:
         get_layer = network.get_layer
-      return SelectSearchSourcesLayer.select_if_needed(
-        get_layer(target[len("layer:"):]), search_choices=search_choices).output
+      layer = get_layer(target[len("layer:"):])
+      if not layer:  # some get_layer during temp construction might return None
+        return None
+      return SelectSearchSourcesLayer.select_if_needed(layer, search_choices=search_choices).output
     assert network.extern_data.has_data(target), "target %r unknown" % target
     data = network.get_extern_data(target, mark_data_key_as_used=mark_data_key_as_used)
     if search_choices:
@@ -1136,11 +1148,11 @@ class LayerBase(object):
     """
     with reuse_name_scope(self.get_absolute_name_scope_prefix() + "batch_norm", absolute=True):
       if masked_time:
-        x = data.get_placeholder_flattened(keep_dims=True)
-        mean, variance = tf.nn.moments(x, axes=[0], keep_dims=True)
+        x = data.get_placeholder_flattened(keepdims=True)
+        mean, variance = TFCompat.v1.nn.moments(x, axes=[0], keep_dims=True)
       else:
         x = data.placeholder
-        mean, variance = tf.nn.moments(x, axes=data.get_axes(exclude_feature=True), keep_dims=True)
+        mean, variance = TFCompat.v1.nn.moments(x, axes=data.get_axes(exclude_feature=True), keep_dims=True)
       if sample_mean is None:
         with self.var_creation_scope():
           sample_mean = self.add_param(tf.Variable(
@@ -1149,7 +1161,7 @@ class LayerBase(object):
             trainable=False))
         # Use exponential moving average of batch mean.
         # Note: We could also use cumulative moving average. Our Theano implementation does that for inference.
-        sample_mean = tf.assign_add(sample_mean, (mean - sample_mean) * momentum)
+        sample_mean = TFCompat.v1.assign_add(sample_mean, (mean - sample_mean) * momentum)
       if sample_variance is None:
         # Note: Our Theano implementation does not use a moving average for this.
         with self.var_creation_scope():
@@ -1157,12 +1169,12 @@ class LayerBase(object):
             initial_value=tf.ones(data.get_bc_spatial_batch_shape()),
             name="%s_%s_variance" % (self.name, data.name),
             trainable=False))
-        sample_variance = tf.assign_add(sample_variance, (variance - sample_variance) * momentum)
+        sample_variance = TFCompat.v1.assign_add(sample_variance, (variance - sample_variance) * momentum)
       # If train or if force_sample, use default use_sample=0.0, otherwise use_sample=1.0.
       use_sample = 1.0 + tf.cast(tf.logical_or(self.network.train_flag, force_sample), tf.float32) * (use_sample - 1.0)
       mean = (1. - use_sample) * mean + use_sample * sample_mean
       variance = (1. - use_sample) * variance + use_sample * sample_variance
-      bn = (data.placeholder - mean) * tf.rsqrt(variance + epsilon)
+      bn = (data.placeholder - mean) * TFCompat.v1.rsqrt(variance + epsilon)
       if use_std:
         if gamma is None:
           with self.var_creation_scope():
@@ -1268,8 +1280,8 @@ class LayerBase(object):
       assert not data.sparse
       assert numpy.prod(bc_shape) == data.dim
       with rec_layer.var_creation_scope():
-        x = tf.get_variable(
-          "init_%s_var" % name, shape=(data.dim,), dtype=data.dtype, initializer=tf.zeros_initializer(dtype=data.dtype))
+        x = TFCompat.v1.get_variable(
+          "init_%s_var" % name, shape=(data.dim,), dtype=data.dtype, initializer=tf.zeros_initializer())
       x = tf.reshape(x, bc_shape, name="init_%s_var_bc" % name)
       x = tf.tile(x, [batch_dim if (i == data.batch_dim_axis) else 1 for i in range(data.batch_ndim)],
                   name="init_%s_var_batch_bc" % name)
@@ -1409,7 +1421,7 @@ class ReuseParams:
       self.layer_name = layer_name
       self.network = network
       self.get_layer_func = get_layer
-      self.var_scope = tf.get_variable_scope()
+      self.var_scope = TFCompat.v1.get_variable_scope()
 
     def get_layer(self):
       """
@@ -1530,12 +1542,13 @@ class ReuseParams:
   def get_variable_scope(self, base_layer, **kwargs):
     """
     :param LayerBase base_layer:
-    :param kwargs: passed to tf.variable_scope
-    :rtype: tf.VariableScope
+    :param kwargs: passed to tf.compat.v1.variable_scope
+    :rtype: TFCompat.v1.VariableScope
     """
     def _variable_custom_getter(**kwargs_):
       return self.variable_custom_getter(base_layer=base_layer, **kwargs_)
-    with tf.variable_scope(tf.get_variable_scope(), custom_getter=_variable_custom_getter, **kwargs) as scope:
+    with TFCompat.v1.variable_scope(
+          TFCompat.v1.get_variable_scope(), custom_getter=_variable_custom_getter, **kwargs) as scope:
       return scope
 
   def variable_custom_getter(self, getter, name, base_layer, **kwargs):
@@ -1607,6 +1620,11 @@ class SearchChoices(object):
     self.beam_scores = None  # type: typing.Optional[tf.Tensor]  # (batch, beam)
     self.is_decided = is_decided
     self.keep_raw = keep_raw
+    if not owner.output.beam:
+      assert beam_size == 1
+    else:
+      assert owner.output.beam.beam_size == beam_size
+      owner.network.register_search_choices_for_beam(beam=owner.output.beam, search_choices=self)
 
   def __repr__(self):
     def short(v):
@@ -1782,10 +1800,19 @@ class SearchChoices(object):
     layers_flat = [v for v in nest.flatten(layer_desc) if isinstance(v, LayerBase)]
     if len(layers_flat) <= 1:
       return layer_desc
-    from functools import cmp_to_key
-    common_choices = max([layer.get_search_choices() for layer in layers_flat], key=cmp_to_key(cls.compare))
-    if not common_choices:
+    search_choicess = []
+    for layer in layers_flat:
+      if not layer.output.beam:
+        continue
+      search_choices = layer.get_search_choices()
+      from pprint import pformat
+      assert search_choices, "layer %r has beam %r but no search choices; from layer desc\n%s" % (
+        layer, layer.output.beam, pformat(layer_desc))
+      search_choicess.append(search_choices)
+    if not search_choicess:
       return layer_desc
+    from functools import cmp_to_key
+    common_choices = max(search_choicess, key=cmp_to_key(cls.compare))
     layer_desc = layer_desc.copy()
     layer_desc["_src_common_search_choices"] = common_choices
     return common_choices.translate_to_this_search_beam(layer_desc)
@@ -1813,6 +1840,10 @@ class SourceLayer(LayerBase):
         self, data_key, data,
         {k: v for (k, v) in network.extern_data.data.items() if v.placeholder is not None}))
     self.output = data
+    if self.output.beam:
+      # This can happen if register_as_extern_data was used on a layer with a beam.
+      search_choices = network.get_search_choices_from_beam(self.output.beam)
+      self.sources.append(search_choices.owner)
 
   @classmethod
   def transform_config_dict(cls, d, network, get_layer):
@@ -2162,6 +2193,7 @@ class SelectSearchSourcesLayer(InternalLayer):
     :param SearchChoices|None search_choices:
     :rtype: LayerBase
     """
+    assert isinstance(layer, LayerBase)
     if not search_choices:
       return layer
     layer_search_choices = layer.get_search_choices()
@@ -2378,12 +2410,12 @@ class LayerNormLayer(_ConcatInputLayer):
     dim = self.input_data.dim
     axis = self.input_data.feature_dim_axis
     with self.var_creation_scope():
-      scale = self.add_param(tf.get_variable("scale", [dim], initializer=tf.ones_initializer()))
-      bias = self.add_param(tf.get_variable("bias", [dim], initializer=tf.zeros_initializer()))
-    mean = tf.reduce_mean(x, axis=[axis], keep_dims=True, name="mean")
-    variance = tf.reduce_mean(tf.square(x - mean), axis=[axis], keep_dims=True, name="variance")
+      scale = self.add_param(TFCompat.v1.get_variable("scale", [dim], initializer=tf.ones_initializer()))
+      bias = self.add_param(TFCompat.v1.get_variable("bias", [dim], initializer=tf.zeros_initializer()))
+    mean = tf.reduce_mean(x, axis=[axis], keepdims=True, name="mean")
+    variance = tf.reduce_mean(tf.square(x - mean), axis=[axis], keepdims=True, name="variance")
     with tf.name_scope("normalized"):
-      norm_x = (x - mean) * tf.rsqrt(variance + epsilon)
+      norm_x = (x - mean) * TFCompat.v1.rsqrt(variance + epsilon)
     self.output.placeholder = norm_x * scale + bias
     self.output.size_placeholder = self.input_data.size_placeholder.copy()
 
@@ -2432,7 +2464,7 @@ class SliceLayer(_ConcatInputLayer):
             tf.maximum(0, self.output.size_placeholder[axis_wo_batch] + slice_end))
       if slice_step:
         self.output.size_placeholder[axis_wo_batch] = (
-          tf.ceil(tf.divide(self.output.size_placeholder[axis_wo_batch], slice_step)))
+          TFCompat.v1.ceil(tf.divide(self.output.size_placeholder[axis_wo_batch], slice_step)))
       from TFUtil import DimensionTag
       if not DimensionTag.get_tag_from_size_tensor(self.output.size_placeholder[axis_wo_batch]):
         tag = DimensionTag(
@@ -2843,7 +2875,7 @@ class LinearLayer(_ConcatInputLayer):
       else:
         weights_shape = (n_in, n_out)
 
-      weights = self.add_param(tf.get_variable(
+      weights = self.add_param(TFCompat.v1.get_variable(
         name="W", shape=weights_shape, dtype=tf.float32, initializer=fwd_weights_initializer))
       weights_ = weights
       if in_split_info:
@@ -2856,7 +2888,7 @@ class LinearLayer(_ConcatInputLayer):
       if self.with_bias:
         bias_initializer = get_initializer(
           bias_init, seed=self.network.random.randint(2 ** 31) if bias_init else 0, eval_local_ns={"layer": self})
-        b = self.add_param(tf.get_variable(
+        b = self.add_param(TFCompat.v1.get_variable(
           name="b", shape=(n_out,), dtype=tf.float32, initializer=bias_initializer))
       else:
         assert not bias_init
@@ -3845,6 +3877,27 @@ class MergeDimsLayer(_ConcatInputLayer):
         d[j] *= v
       else:
         d[j] = v
+    for axis in merge_axes:
+      if self.output.get_batch_axis_excluding_batch(axis) in self.input_data.size_placeholder.keys():
+        continue  # is already covered in the first loop, so skip
+      new_axis = self._old_axis_to_new_axis(input_data=self.input_data, merge_axes=merge_axes, old_axis=axis)
+      if new_axis == self.output.batch_dim_axis:
+        continue
+      j = self.output.get_batch_axis_excluding_batch(new_axis)
+      if j in d:
+        d[j] *= self.input_data.get_dim(axis)
+    if self.input_data.batch_dim_axis in merge_axes:
+      # The batch axis got multiplied.
+      in_shape = tf.shape(self.input_data.placeholder)
+      batch_multiplier = tf.reduce_prod([
+        in_shape[axis] for axis in merge_axes if axis != self.input_data.batch_dim_axis])
+      from TFUtil import tile_transposed, DimensionTag
+      for j, v in sorted(d.items()):
+        d[j] = tile_transposed(v, axis=0, multiples=batch_multiplier)
+        # But keep the same dim-tag.
+        dim_tag = DimensionTag.get_tag_from_size_tensor(v)
+        if dim_tag is not None:
+          dim_tag.set_tag_on_size_tensor(d[j])
     return d
 
   @classmethod
@@ -4646,12 +4699,12 @@ class ConvLayer(_ConcatInputLayer):
     with self.var_creation_scope():
       fwd_weights_initializer = get_initializer(
         forward_weights_init, seed=self.network.random.randint(2 ** 31), eval_local_ns={"layer": self})
-      filters = self.add_param(tf.get_variable(name="W", shape=filter_shape, initializer=fwd_weights_initializer))
+      filters = self.add_param(TFCompat.v1.get_variable(name="W", shape=filter_shape, initializer=fwd_weights_initializer))
     data_format = None
     if input_data.is_batch_feature_major:
       assert self.output.is_batch_feature_major
       data_format = {1: "NCW", 2: "NCHW", 3: "NCDHW"}[len(filter_size)]
-    y = tf.nn.convolution(
+    y = TFCompat.v1.nn.convolution(
       input_data.placeholder, data_format=data_format,
       filter=filters,
       padding=padding, strides=strides, dilation_rate=dilation_rate)
@@ -4660,7 +4713,7 @@ class ConvLayer(_ConcatInputLayer):
       with self.var_creation_scope():
         bias_initializer = get_initializer(
           bias_init, seed=self.network.random.randint(2 ** 31) if bias_init else 0, eval_local_ns={"layer": self})
-        b = self.add_param(tf.get_variable(name="bias", shape=(n_out,), initializer=bias_initializer))
+        b = self.add_param(TFCompat.v1.get_variable(name="bias", shape=(n_out,), initializer=bias_initializer))
       y += b
     if activation:
       from TFUtil import get_activation_function
@@ -4703,7 +4756,7 @@ class ConvLayer(_ConcatInputLayer):
       return -(-a // b)
 
     padding = padding.upper()
-    # See tf.nn.convolution() documentation for more.
+    # See tf.compat.v1.nn.convolution() documentation for more.
     if padding == "SAME":
       return ceildiv(in_dim, stride)
     elif padding == "VALID":
@@ -4820,7 +4873,7 @@ class PoolLayer(_ConcatInputLayer):
     if input_data.is_batch_feature_major:
       assert self.output.is_batch_feature_major
       data_format = {1: "NCW", 2: "NCHW", 3: "NCDHW"}[len(pool_size)]
-    y = tf.nn.pool(
+    y = TFCompat.v1.nn.pool(
       x, window_shape=pool_size, pooling_type=mode, padding=padding,
       dilation_rate=dilation_rate, strides=strides, data_format=data_format)
     # y shape is [batch] + spatial_dims + [n_out].
@@ -4937,7 +4990,7 @@ class TransposedConvLayer(_ConcatInputLayer):
     with self.var_creation_scope():
       fwd_weights_initializer = get_initializer(
         forward_weights_init, seed=self.network.random.randint(2 ** 31), eval_local_ns={"layer": self})
-      filters = self.add_param(tf.get_variable(
+      filters = self.add_param(TFCompat.v1.get_variable(
         # Use that name to easily identify the format later.
         # E.g. we might want to switch to some more canonical format at some point.
         name="W_native_transposed_conv", shape=filter_shape, initializer=fwd_weights_initializer))
@@ -4949,7 +5002,7 @@ class TransposedConvLayer(_ConcatInputLayer):
       with self.var_creation_scope():
         bias_initializer = get_initializer(
           bias_init, seed=self.network.random.randint(2 ** 31) if bias_init else 0, eval_local_ns={"layer": self})
-        b = self.add_param(tf.get_variable(name="bias", shape=(self.output.dim,), initializer=bias_initializer))
+        b = self.add_param(TFCompat.v1.get_variable(name="bias", shape=(self.output.dim,), initializer=bias_initializer))
       y += b
     if activation:
       act_func = get_activation_function(activation)
@@ -5090,7 +5143,7 @@ class ReduceLayer(_ConcatInputLayer):
       if keep_dims:
         y = expand_multiple_dims(y, axes=axes)
     else:
-      y = f(x_, axis=axes, keep_dims=keep_dims)
+      y = f(x_, axis=axes, keepdims=keep_dims)
     self.output.placeholder = y
 
   @classmethod
@@ -5385,10 +5438,10 @@ class WeightedSumLayer(_ConcatInputLayer):
     axes_shape = [x_shape[i] for i in range(len(other_axes), self.input_data.batch_ndim)]
     x = tf.reshape(x, shape=[new_batch_dim] + axes_shape + [1])
     with self.var_creation_scope():
-      filters = self.add_param(tf.get_variable(
+      filters = self.add_param(TFCompat.v1.get_variable(
         name="W", shape=size, initializer=tf.constant_initializer(1.0 / numpy.prod(size))))
     filters = tf.reshape(filters, shape=list(size) + [1, 1])
-    y = tf.nn.convolution(x, filter=filters, padding=padding.upper())  # result: (new_batch_dim, ..., 1)
+    y = TFCompat.v1.nn.convolution(x, filter=filters, padding=padding.upper())  # result: (new_batch_dim, ..., 1)
     if keep_dims:
       y_shape = tf.shape(y)
       # Now split new_batch_dim again into the other_axes.
@@ -5510,7 +5563,7 @@ class ElemwiseProdLayer(_ConcatInputLayer):
       assert isinstance(size, (list, tuple))
       assert tuple(size) == tuple(shape_size), "wrong size %r with input_data %r" % (size, self.input_data)
     with self.var_creation_scope():
-      w = self.add_param(tf.get_variable(name="W", shape=size, initializer=tf.constant_initializer(1.0)))
+      w = self.add_param(TFCompat.v1.get_variable(name="W", shape=size, initializer=tf.constant_initializer(1.0)))
     w_full_shape = [self.input_data.batch_shape[a] if (a in axes) else 1
                     for a in range(self.input_data.batch_ndim)]
     w = tf.reshape(w, shape=w_full_shape)
@@ -5849,9 +5902,9 @@ class DotLayer(LayerBase):
         " ", "b_rem_axes:", b_rem_axes, "dims:", b_rem_dims, "b_var_axes:", b_var_axes, "dims:", b_var_dims, b_var_dim,
         "b_reduce_axes:", b_reduce_axes, "dims:", b_reduce_dims, b_reduce_dim, "transpose_b:", transpose_b, file=log.v3)
       with tf.control_dependencies([
-            tf.assert_equal(
+            TFCompat.v1.assert_equal(
               a_rem_dims, b_rem_dims, data=[a_shape, b_shape, a_rem_dims, b_rem_dims], summarize=100),
-            tf.assert_equal(
+            TFCompat.v1.assert_equal(
               a_reduce_dim, b_reduce_dim, data=[a_shape, b_shape, a_reduce_dims, b_reduce_dims], summarize=100)]):
         a = tf.identity(a)
     if not transpose_a:
@@ -5991,7 +6044,7 @@ class ShiftAxisLayer(_ConcatInputLayer):
     super(ShiftAxisLayer, self).__init__(**kwargs)
     assert isinstance(amount, int)
     axis = self.input_data.get_axis_from_description(axis)
-    paddings = numpy.zeros(shape=(self.input_data.batch_ndim, 2))
+    paddings = numpy.zeros(shape=(self.input_data.batch_ndim, 2), dtype="int32")
     if amount < 0:  # left-shift
       shifted = single_strided_slice(self.input_data.placeholder, axis=axis, begin=-amount)
       paddings[axis] = [0, -amount]
@@ -6114,20 +6167,21 @@ class ResizeLayer(_ConcatInputLayer):
       # We are going to build a mask over the axis. This mask will be shared over all seqs in the batch.
       # Similar to in tf.nn.dropout. Build random_tensor as uniform [keep_prob, 1.0 + keep_prob).
       random_tensor = 1.0 - fill_dropout  # keep_prop
-      random_tensor += tf.random_uniform(
+      random_tensor += TFCompat.v1.random_uniform(
         [shape[axis], factor - 1], seed=self.network.random.randint(2**31))  # (old_size, factor - 1)
       # 0. if [keep_prob, 1.0) and 1. if [1.0, 1.0 + keep_prob)
       mask = tf.cast(tf.floor(random_tensor), dtype=tf.bool)
       mask = tf.concat([tf.ones((shape[axis], 1), dtype=tf.bool), mask], axis=1)  # (old_size, factor)
       mask = tf.reshape(mask, (new_size,))  # (new_size,)
-      new_size_dropped = tf.reduce_sum(tf.to_int32(mask))
+      new_size_dropped = tf.reduce_sum(tf.cast(mask, tf.int32))
       mask = expand_dims_unbroadcast(mask, axis=0, dim=shape[0])  # (batch,new_size)
       x = tf.boolean_mask(x, mask)  # [batch*new_size_dropped] + remaining_shape
       x = tf.reshape(x, [shape[0], new_size_dropped] + remaining_shape)  # [batch, new_size_dropped] + remaining_shape
       if (axis - 1) in self.output.size_placeholder:
         orig_mask = tf.sequence_mask(
           self.output.size_placeholder[axis - 1], maxlen=new_size, dtype=tf.bool)  # (batch,new_size)
-        self.output.size_placeholder[axis - 1] = tf.reduce_sum(tf.to_int32(tf.logical_and(mask, orig_mask)), axis=1)
+        self.output.size_placeholder[axis - 1] = tf.reduce_sum(
+          tf.cast(tf.logical_and(mask, orig_mask), tf.int32), axis=1)
     if axis != 1:
       perm = [0] + remaining_axes
       perm.insert(axis, 1)
@@ -6310,7 +6364,7 @@ class CombineLayer(LayerBase):
         eval_str=eval, eval_locals=eval_locals)
     if with_bias:
       with self.var_creation_scope():
-        b = self.add_param(tf.get_variable(
+        b = self.add_param(TFCompat.v1.get_variable(
           name="b", shape=(self.output.dim,),
           initializer=tf.constant_initializer(value=0, dtype=tf.float32)))
       x += b
@@ -6663,7 +6717,7 @@ class CondLayer(LayerBase):
     """
     super(CondLayer, self).__init__(**kwargs)
     import os
-    self._parent_scope = os.path.dirname(tf.get_variable_scope().name)
+    self._parent_scope = os.path.dirname(TFCompat.v1.get_variable_scope().name)
     self.condition_desc = condition
     self.condition_layer = self._make_layer(self.condition_desc)
     self.true_layer_desc = true_layer
@@ -7215,7 +7269,7 @@ class VariableLayer(LayerBase):
     from TFUtil import get_initializer, expand_dims_unbroadcast
     initializer = get_initializer(init, seed=self.network.random.randint(2 ** 31), eval_local_ns={"layer": self})
     with self.var_creation_scope():
-      var = self.add_param(tf.get_variable(
+      var = self.add_param(TFCompat.v1.get_variable(
         name=self.name, shape=shape, dtype=dtype,
         initializer=initializer, trainable=trainable
       ))
@@ -7706,7 +7760,7 @@ class TikhonovRegularizationLayer(CopyLayer):
     """
     super(TikhonovRegularizationLayer, self).__init__(**kwargs)
     with self.var_creation_scope():
-      dummy_var = self.add_param(tf.get_variable(name="dummy", shape=(), dtype=tf.float32))
+      dummy_var = self.add_param(TFCompat.v1.get_variable(name="dummy", shape=(), dtype=tf.float32))
     from TFUtil import MetaLosses
     self.output.placeholder = MetaLosses.tikhonov_regularized(
       x=self.input_data.placeholder, dummy=dummy_var,
@@ -7792,7 +7846,7 @@ class FramewiseStatisticsLayer(LayerBase):
       source.output_before_activation.x, output_seq_lens, time_major=output.is_time_major)
     target_seq_lens = target.size_placeholder[0]
     target_flat = flatten_with_seq_len_mask(target.placeholder, target_seq_lens, time_major=target.is_time_major)
-    target_flat.set_shape(tf.TensorShape([tf.Dimension(None)]))
+    target_flat.set_shape(tf.TensorShape([None]))
     loss_ce = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=output_before_softmax_flat, labels=target_flat)
     flat_last_dim = output_before_softmax_flat.get_shape().ndims - 1
     assert flat_last_dim == 1
@@ -7802,12 +7856,12 @@ class FramewiseStatisticsLayer(LayerBase):
     # target_flat is shape (time,) -> index.
     target_flat_exp = tf.stack([tf.range(tf.shape(target_flat)[0], dtype=tf.int32), target_flat], axis=1)
     true_label_prob = tf.gather_nd(output_flat, target_flat_exp)
-    true_label_prob.set_shape(tf.TensorShape([tf.Dimension(None)]))
+    true_label_prob.set_shape(tf.TensorShape([None]))
     true_label_prob_i32 = tf.clip_by_value(
       tf.cast(tf.round(true_label_prob * histogram_num_bins), tf.int32), 0, histogram_num_bins - 1)
     true_label_prob_histogram = tf.stack(
       [tf.equal(true_label_prob_i32, i) for i in range(histogram_num_bins)], axis=1)
-    true_label_prob_histogram.set_shape(tf.TensorShape([tf.Dimension(None), tf.Dimension(histogram_num_bins)]))
+    true_label_prob_histogram.set_shape(tf.TensorShape([None, histogram_num_bins]))
 
     mask_no_sil = tf.not_equal(target_flat, sil_label_idx)
     mask_sil = tf.equal(target_flat, sil_label_idx)
@@ -7820,8 +7874,8 @@ class FramewiseStatisticsLayer(LayerBase):
         initial_value=0, dtype=tf.int64, trainable=False, name="accumulated_seq_len")
       accumulated_seq_len_sil = tf.Variable(
         initial_value=0, dtype=tf.int64, trainable=False, name="accumulated_seq_len_sil")
-    accumulated_seq_len = tf.assign_add(accumulated_seq_len, tf.cast(seq_len, tf.int64))
-    accumulated_seq_len_sil = tf.assign_add(accumulated_seq_len_sil, tf.cast(seq_len_sil, tf.int64))
+    accumulated_seq_len = TFCompat.v1.assign_add(accumulated_seq_len, tf.cast(seq_len, tf.int64))
+    accumulated_seq_len_sil = TFCompat.v1.assign_add(accumulated_seq_len_sil, tf.cast(seq_len_sil, tf.int64))
     accumulated_seq_len_no_sil = accumulated_seq_len - accumulated_seq_len_sil
 
     self.stats["batch_seq_length"] = seq_len
@@ -7858,7 +7912,7 @@ class FramewiseStatisticsLayer(LayerBase):
             name="accumulated_%s" % k,
             initial_value=numpy.zeros(acc_shape, dtype=acc_dtype), dtype=acc_dtype,
             trainable=False)
-        acc_v = tf.assign_add(acc_v, tf.reduce_sum(tf.cast(v, acc_dtype), axis=0))
+        acc_v = TFCompat.v1.assign_add(acc_v, tf.reduce_sum(tf.cast(v, acc_dtype), axis=0))
         self.stats["accumulated_%s" % k] = tf.cast(acc_v, tf.float64) / tf.cast(acc_seq_len, tf.float64)
 
     self.stats["batch_loss_perplexity"] = tf.exp(self.stats["batch_loss_ce"])
@@ -8055,7 +8109,7 @@ class HDFDumpLayer(LayerBase):
         sys.excepthook(*sys.exc_info())
         raise
 
-    tf_write = tf.py_func(
+    tf_write = TFCompat.v1.py_func(
       py_write,
       [data.placeholder,
        self.network.get_seq_tags(beam=data.beam),
@@ -8203,8 +8257,8 @@ class OfficialResNetLayer(_ConcatInputLayer):
     self.output.placeholder = output
     # Very generic way to collect all created params.
     # Also, see the usage of :func:`LayerBase.cls_layer_scope`, e.g. for initial vars.
-    scope_name_prefix = tf.get_variable_scope().name + "/"  # e.g. "layer1/"
-    params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=re.escape(scope_name_prefix))
+    scope_name_prefix = TFCompat.v1.get_variable_scope().name + "/"  # e.g. "layer1/"
+    params = tf.get_collection(TFCompat.v1.GraphKeys.GLOBAL_VARIABLES, scope=re.escape(scope_name_prefix))
     for p in params:
       if not p.name.startswith(scope_name_prefix):
         continue
@@ -8333,7 +8387,7 @@ class Loss(object):
       loss = tf.reshape(loss, tf.shape(self.output.placeholder)[:2])  # (batch,time) or (time,batch)
       loss = tf.reduce_sum(loss, axis=self.output.time_dim_axis)  # (batch,)
       if normalize:
-        loss /= tf.to_float(self.output.get_sequence_lengths())
+        loss /= tf.cast(self.output.get_sequence_lengths(), tf.float32)
     else:
       # We expect that there is no time-dim, just a batch-dim. It could be like (batch,other_dims...) though.
       if loss.get_shape().ndims > 1:
@@ -8691,7 +8745,7 @@ class GenericCELoss(Loss):
       :param tf.Tensor target:
       :rtype: tf.Tensor
       """
-      nlog_scores = -tf.log(tf.clip_by_value(y, 1.e-20, 1.e20))  # (time,dim)
+      nlog_scores = -TFCompat.v1.log(tf.clip_by_value(y, 1.e-20, 1.e20))  # (time,dim)
       # target is shape (time,) -> index.
       target_exp = tf.stack([tf.range(tf.shape(target)[0], dtype=tf.int32), target], axis=1)  # (time,2)
       # Thus K == 2. gather_nd out will be (target_exp.shape[0],) = (time,).
@@ -8729,13 +8783,13 @@ class GenericCELoss(Loss):
     assert self.output_with_activation
     x = self.output_with_activation.x
     y = self.output_with_activation.y
-    grad_f, = tf.gradients(tf.log(y), x)
+    grad_f, = tf.gradients(TFCompat.v1.log(y), x)
     assert grad_f is not None
     grad_f = flatten_with_seq_len_mask(grad_f, seq_lens=self.output_seq_lens, time_major=self.output.is_time_major)
     x = flatten_with_seq_len_mask(x, seq_lens=self.output_seq_lens, time_major=self.output.is_time_major)
     y = flatten_with_seq_len_mask(y, seq_lens=self.output_seq_lens, time_major=self.output.is_time_major)
     assert y.get_shape().ndims == 2
-    y /= tf.reduce_sum(y, axis=1, keep_dims=True)
+    y /= tf.reduce_sum(y, axis=1, keepdims=True)
     assert self.output.dim == self.target.dim
     assert self.target.sparse
     return self._loss_func(x, y, grad_f, self.target_flat)
@@ -8875,7 +8929,7 @@ class CtcLoss(Loss):
           targets=self.target.get_placeholder_as_batch_major(), targets_seq_lens=self.target_seq_lens,
           **self.ctc_opts)
       else:
-        self._ctc_loss = tf.nn.ctc_loss(
+        self._ctc_loss = TFCompat.v1.nn.ctc_loss(
           inputs=logits, labels=labels, sequence_length=seq_lens, time_major=self.output.is_time_major,
           **self.ctc_opts)
       loss = self._ctc_loss  # shape (batch,)
@@ -9200,7 +9254,7 @@ class ExpectedLoss(Loss):
       if self.loss_kind == "value":
         losses = self.losses.get_value()
       elif self.loss_kind == "error":
-        losses = tf.to_float(self.losses.get_error())
+        losses = tf.cast(self.losses.get_error(), tf.float32)
       else:
         raise ValueError("invalid loss_kind %r" % self.loss_kind)
       assert losses is not None, "no value for loss_kind %r with loss %r" % (self.loss_kind, self.losses)
@@ -9222,12 +9276,12 @@ class ExpectedLoss(Loss):
       if self.subtract_average_loss:
         # Gradient variance reduction for the gradient of the value-weights.
         # In case that the values also are differentiable, we don't want it to propagate through this.
-        corrected_losses -= tf.stop_gradient(tf.reduce_mean(losses, axis=1, keep_dims=True, name="avg_loss"))
+        corrected_losses -= tf.stop_gradient(tf.reduce_mean(losses, axis=1, keepdims=True, name="avg_loss"))
       weighted_losses = tf.reduce_sum(corrected_losses * value_weights, axis=1, name="weighted_loss")  # (batch,)
       if self.loss_correction_grad_only and corrected_losses is not losses:
         weighted_losses += tf.stop_gradient(tf.reduce_sum((losses - corrected_losses) * value_weights, axis=1))
       if self.divide_beam_size:
-        weighted_losses /= tf.to_float(tf.shape(beam_scores)[-1])
+        weighted_losses /= tf.cast(tf.shape(beam_scores)[-1], tf.float32)
       return self.reduce_func(weighted_losses)
 
   def get_error(self):
@@ -9386,7 +9440,7 @@ class MeanSquaredError(Loss):
       else:
         y = self.target_flat
       assert y.get_shape().ndims == 2
-      out = tf.squared_difference(x, y)
+      out = TFCompat.v1.squared_difference(x, y)
       assert out.get_shape().ndims == 2
       out = self.reduce_func(tf.reduce_mean(out, axis=1))
       return out
@@ -9437,7 +9491,7 @@ class ExternSprintLoss(Loss):
       from TFSprint import get_sprint_loss_and_error_signal
       loss, error_signal = get_sprint_loss_and_error_signal(
         sprint_opts=self.sprint_opts,
-        log_posteriors=tf.log(output),
+        log_posteriors=TFCompat.v1.log(output),
         seq_lengths=self.output_seq_lens,
         seq_tags=seq_tags)
       loss = self.reduce_func(loss)
@@ -9488,7 +9542,7 @@ class FastBaumWelchLoss(Loss):
       from TFNativeOp import fast_baum_welch_by_sprint_automata
       fwdbwd, obs_scores = fast_baum_welch_by_sprint_automata(
         sprint_opts=self.sprint_opts,
-        am_scores=-tf.log(output),
+        am_scores=-TFCompat.v1.log(output),
         float_idx=seq_mask,
         tags=seq_tags)
       loss = self.reduce_func(obs_scores[0])

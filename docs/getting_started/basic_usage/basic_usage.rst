@@ -1,7 +1,7 @@
 .. _basic_usage:
 
 ===========
-Basic usage
+Basic Usage
 ===========
 
 Install RETURNN, :ref:`installation`.
@@ -27,20 +27,24 @@ as well as some training parameters.
 Some common config parameters:
 
 task
-    The task, such as ``train`` or ``forward``.
+    The task, such as ``train``, ``forward`` or ``search``.
 
 device
-    E.g. ``gpu`` or ``cpu``. Can also be ``gpu0,gpu1`` for multi-GPU training.
+    E.g. ``gpu`` or ``cpu``.
+    Although RETURNN will automatically detect and use a GPU if available,
+    a specific device can be enforced by setting this parameter.
 
 use_tensorflow
     If you set this to ``True``, TensorFlow will be used.
 
-train / dev
+train / dev / eval
     The datasets. This can be a filename to a hdf-file.
     Or it can be a dict with an entry ``class`` where you can choose a from a variety
     of other dataset implementations, including many synthetic generated data.
+    ``train`` and ``dev`` are used during training, while ``eval`` is usually used to define the dataset for the
+    ``forward`` or ``search`` task.
 
-extern_data (former num_outputs)
+extern_data
     Defines the source/target dimensions of the data. Both can be integers.
     extern_data can also be a dict if your dataset has other data streams.
     The standard source data is called "``data``" by default,
@@ -55,30 +59,13 @@ extern_data (former num_outputs)
 
     For a more explicit definition of the shapes, you can provide a dict instead of a list or tuple. This dict may
     contain information to create "Data" objects. For extern_data, only ``dim`` and ``shape`` are required.
+    Example: :code:`'feature_data': {'dim': 80, 'shape': (None, 80)}`
+    This defines 80 dimensional features with a time axis of arbitrary length.
     Example: :code:`'speaker_classes': {'dim': 1172, 'shape': (), 'sparse': True}`
     This defines a sparse input for e.g. speaker classes that do not have a time axis.
 
-    In general, all input parameters to :class:`TFUtil.Data` can be provided.
+    In general, all input parameters to :class:`TFUtil.Data` can be provided
 
-batching
-    The sorting variant when the mini-batches are created. E.g. ``random``.
-
-batch_size
-    The total number of frames. A mini-batch has at least a time-dimension
-    and a batch-dimension (or sequence-dimension), and depending on dense or sparse,
-    also a feature-dimension.
-    ``batch_size`` is the upper limit for ``time * sequences`` during creation of the mini-batches.
-
-max_seqs
-    The maximum number of sequences in one mini-batch.
-
-chunking
-    You can chunk sequences of your data into parts, which will greatly reduce the amount of needed zero-padding.
-    This option is a string of two numbers, separated by a comma, i.e. ``chunk_size:chunk_step``,
-    where ``chunk_size`` is the size of a chunk,
-    and ``chunk_step`` is the step after which we create the next chunk.
-    I.e. the chunks will overlap by ``chunk_size - chunk_step`` frames.
-    Set this to ``0`` to disable it, or for example ``100:75`` to enable it.
 
 network
     This is a dict which defines the network topology.
@@ -116,6 +103,33 @@ network
     See :class:`TFNetworkRecLayer.RecLayer` or :class:`NetworkRecurrentLayer.RecurrentUnitLayer`.
     See also :ref:`tf_lstm_benchmark`.
 
+batching
+    Defines the default value for ``seq_ordering`` across all datasets.
+    It is recommended to not use this parameter,
+    but rather define ``seq_ordering`` explicitely in the datasets for better readability.
+    Possible values are:
+
+        - ``default``: Keep the sequences as is
+        - ``reverse``: Use the default sequences in reversed order
+        - ``random``: Shuffle the data with a predefined fixed seed
+        - ``random:<seed>``: Shuffle the data with the seed given
+        - ``sorted``: Sort by length (only if available), beginning with shortest sequences
+        - ``sorted_reverse``: Sort by length, beginning with longest sequences
+        - ``laplace:<n_buckets>``: Sort by length with n laplacian buckets (one bucket means going from shortest to longest and back with 1/n of the data).
+        - ``laplace:.<n_sequences>``: sort by length with n sequences per laplacian bucket.
+
+    Note that not all sequence order modes are available for all datasets,
+    and some datasets may provide additional modes.
+
+batch_size
+    The total number of frames. A mini-batch has at least a time-dimension
+    and a batch-dimension (or sequence-dimension), and depending on dense or sparse,
+    also a feature-dimension.
+    ``batch_size`` is the upper limit for ``time * sequences`` during creation of the mini-batches.
+
+max_seqs
+    The maximum number of sequences in one mini-batch.
+
 learning_rate
     The learning rate during training, e.g. ``0.01``.
 
@@ -126,6 +140,8 @@ adam / nadam / ...
 model
     Defines the model file where RETURNN will save all model params after an epoch of training.
     For each epoch, it will suffix the filename by the epoch number.
+    When running ``forward`` or ``search``, the specified model will be loaded.
+    The epoch can then be selected with the paramter ``load_epoch``.
 
 num_epochs
     The number of epochs to train.
@@ -135,68 +151,17 @@ log_verbosity
 
 
 There are much more params, and more details to many of the listed ones.
-See the code for more details.
+Details on the parameters can be found in the :ref:`parameter reference <parameter_reference>`.
+As the reference is still incomplete, please watch out for additional parameters that can be found in the code.
 All config params can also be passed as command line params.
-See the code for some usage. The generic form is ``++param value``.
+The generic form is ``++param value``, but more options are available.
+Please See the code for some usage.
 
 See :ref:`tech_overview` for more details and an overview how it all works.
 
+.. toctree::
+    :hidden:
 
-====================
-Usage as a framework
-====================
-
-Install RETURNN via ``pip`` (`PyPI entry <https://pypi.org/project/returnn/>`__).
-Then :code:`import returnn` should work.
-See `demo-returnn-as-framework.py <https://github.com/rwth-i6/returnn/blob/master/demos/demo-returnn-as-framework.py>`__ as a full example.
-
-Basically you can write very high level code like this::
-
-    from returnn.TFEngine import Engine
-    from returnn.Dataset import init_dataset
-    from returnn.Config import get_global_config
-
-    config = get_global_config(auto_create=True)
-    config.update(dict(
-        # ...
-    ))
-
-    engine = Engine(config)
-
-    train_data = init_dataset({"class": "Task12AXDataset", "num_seqs": 1000, "name": "train"})
-    dev_data = init_dataset({"class": "Task12AXDataset", "num_seqs": 100, "name": "dev", "fixed_random_seed": 1})
-
-    engine.init_train_from_config(train_data=train_data, dev_data=dev_data)
-
-Or you go lower level and construct the computation graph yourself::
-
-    from returnn.TFNetwork import TFNetwork
-
-    config = get_global_config(auto_create=True)
-
-    net = TFNetwork(train_flag=True)
-    net.construct_from_dict({
-        # ...
-    })
-    fetches = net.get_fetches_dict()
-
-    with tf.Session() as session:
-        results = session.run(fetches, feed_dict={
-            # ...
-            # you could use FeedDictDataProvider
-        })
-
-Or even lower level and just use parts from ``TFUtil``, ``TFNativeOp``, etc.::
-
-    from returnn.TFNativeOp import ctc_loss
-    from returnn.TFNativeOp import edit_distance
-    from returnn.TFNativeOp import NativeLstm2
-
-    from returnn.TFUtil import ctc_greedy_decode
-    from returnn.TFUtil import get_available_gpu_min_compute_capability
-    from returnn.TFUtil import safe_log
-    from returnn.TFUtil import reuse_name_scope
-    from returnn.TFUtil import dimshuffle
-
-    # ...
-
+    network.rst
+    data.rst
+    recurrent_subnet.rst

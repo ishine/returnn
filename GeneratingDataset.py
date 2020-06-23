@@ -119,7 +119,7 @@ class GeneratingDataset(Dataset):
     seqs = [self.generate_seq(seq_idx=seq_idx) for seq_idx in range(start, end)]
     if self.window > 1:
       for seq in seqs:
-        seq.features["data"] = self.sliding_window(seq.features["data"])
+        seq.features["data"] = self._sliding_window(seq.features["data"])
     self._num_timesteps += sum([seq.num_frames for seq in seqs])
     self.added_data += seqs
 
@@ -677,8 +677,8 @@ class DummyDataset(GeneratingDataset):
   def __init__(self, input_dim, output_dim, num_seqs, seq_len=2,
                input_max_value=10.0, input_shift=None, input_scale=None, **kwargs):
     """
-    :param int input_dim:
-    :param int output_dim:
+    :param int|None input_dim:
+    :param int|dict[str,int|(int,int)|dict] output_dim:
     :param int|float num_seqs:
     :param int|dict[str,int] seq_len:
     :param float input_max_value:
@@ -755,6 +755,88 @@ class DummyDatasetMultipleSequenceLength(DummyDataset):
     targets = numpy.array([i % self.num_outputs["classes"][0]
                            for i in range(i1, i2)])
     return DatasetSeq(seq_idx=seq_idx, features=features, targets=targets)
+
+
+class DummyDatasetMultipleDataKeys(DummyDataset):
+  """
+  Like :class:`DummyDataset` this class provides dummy data without any meaning.
+  But it extends :class:`DummyDataset` such that it is able to provide data for multiple data keys,
+  not only `"data"` and `"classes"` (those are also overridable, though the current implementation
+  expects a `"data"` key).
+  Further, `output_dim` is expected to be a `dict` now, which defines the data format for each
+  data key, which also enables the user to customize whether the data is sparse or dense.
+  It also provides the function of :class:`DummyDatasetMultipleSequenceLength` to customize the
+  sequence length for each data point.
+  """
+
+  def __init__(self, output_dim, num_seqs, seq_len=None,
+               input_max_value=10.0, input_shift=None, input_scale=None, data_keys=None, **kwargs):
+    """
+    :param dict[str,int|(int,int)|dict] output_dim: `dict` defining the output for each data key
+      (e.g. `{"data": [200, 2], "classes": [100, 1]}`).
+    :param int|float num_seqs:
+    :param int|dict[str,int] seq_len: definition of the sequence length for each data key,
+      if `int` the given length is used for all data keys.
+    :param float input_max_value:
+    :param float|None input_shift:
+    :param float|None input_scale:
+    :param list[str]|None data_keys: explicit declaration of the data keys,
+      if `None` `"data"` and `"classes"` are used.
+    """
+    if data_keys is None:
+      data_keys = ["data", "classes"]
+    self.data_keys = data_keys
+
+    _seq_len = 20
+    if isinstance(seq_len, int):
+      _seq_len = seq_len
+      seq_len = None
+    if seq_len is None:
+      seq_len = {}
+      for key in self.data_keys:
+        seq_len[key] = _seq_len
+    assert set(data_keys) == set(seq_len.keys()), (
+      "%s: the keys of seq_len (%s) must match the keys in data_keys=%s." % (self, str(seq_len.keys()), str(data_keys)))
+    assert isinstance(output_dim, dict), (
+      "%s: output_dim %r must be a dict containing a definition for each key in data_keys." % (self, output_dim))
+    assert set(data_keys) == set(output_dim.keys()), (
+      "%s: the keys of output_dim (%s) must match the keys in data_keys=%s." % (
+        self, str(output_dim.keys()), str(data_keys)))
+
+    super(DummyDatasetMultipleDataKeys, self).__init__(
+      input_dim=None,  # this was only used for the definition of "data", but this is handled by `output_dim` now.
+      output_dim=output_dim,
+      num_seqs=num_seqs,
+      seq_len=seq_len,
+      input_max_value=input_max_value,
+      input_shift=input_shift,
+      input_scale=input_scale,
+      **kwargs)
+
+  def generate_seq(self, seq_idx):
+    """
+    :param int seq_idx:
+    :rtype: DatasetSeq
+    """
+    features = {}
+    i1 = seq_idx
+
+    for key in self.data_keys:
+      seq_len = self.seq_len[key]
+      output_dim = self.num_outputs[key][0]
+      is_sparse = self.num_outputs[key][1] == 1
+
+      if is_sparse:
+        i2 = i1 + seq_len
+        features[key] = numpy.array([i % self.num_outputs[key][0] for i in range(i1, i2)])
+      else:
+        i2 = i1 + seq_len * output_dim
+        features[key] = numpy.array([
+          ((i % self.input_max_value) + self.input_shift) * self.input_scale
+          for i in range(i1, i2)]).reshape((seq_len, output_dim))
+      i1 = i2
+
+    return DatasetSeq(seq_idx=seq_idx, features=features, targets=None)
 
 
 class StaticDataset(GeneratingDataset):
@@ -1230,7 +1312,8 @@ def _get_audio_log_mel_filterbank(audio, sample_rate, window_len=0.025, step_len
 
 
 def _get_audio_db_mel_filterbank(audio, sample_rate,
-                                 window_len=0.025, step_len=0.010, num_feature_filters=80, fmin=0, min_amp=1e-10):
+                                 window_len=0.025, step_len=0.010, num_feature_filters=80,
+                                 fmin=0, fmax=None, min_amp=1e-10):
   """
   Computes log Mel-filterbank features in dezibel values from an audio signal.
   Provides adjustable minimum frequency and minimual amplitude clipping
@@ -1241,6 +1324,7 @@ def _get_audio_db_mel_filterbank(audio, sample_rate,
   :param float step_len: in seconds
   :param int num_feature_filters: number of mel-filterbanks
   :param int fmin: minimum frequency covered by mel filters
+  :param int|None fmax: maximum frequency covered by mel filters
   :param int min_amp: silence clipping for small amplitudes
   :return: (audio_len // int(step_len * sample_rate), num_feature_filters), float32
   :rtype: numpy.ndarray
@@ -1255,7 +1339,7 @@ def _get_audio_db_mel_filterbank(audio, sample_rate,
     n_mels=num_feature_filters,
     hop_length=int(step_len * sample_rate),
     n_fft=int(window_len * sample_rate),
-    fmin=fmin
+    fmin=fmin, fmax=fmax,
    )
 
   log_mel_filterbank = 20 * numpy.log10(numpy.maximum(min_amp, mel_filterbank))
@@ -1309,15 +1393,21 @@ def _get_random_permuted_audio(audio, sample_rate, opts, random_state):
   import scipy.ndimage
   import warnings
   audio = audio * random_state.uniform(opts.get("rnd_scale_lower", 0.8), opts.get("rnd_scale_upper", 1.0))
+  if opts.get("rnd_zoom_switch", 1.) > 0.:
+    opts.get("rnd_zoom_lower"), opts.get("rnd_zoom_upper"), opts.get("rnd_zoom_order")  # Mark as read.
   if random_state.uniform(0.0, 1.0) < opts.get("rnd_zoom_switch", 0.2):
     with warnings.catch_warnings():
       warnings.simplefilter("ignore")
       # Alternative: scipy.interpolate.interp2d
       factor = random_state.uniform(opts.get("rnd_zoom_lower", 0.9), opts.get("rnd_zoom_upper", 1.1))
-      audio = scipy.ndimage.zoom(audio, factor, order=3)
+      audio = scipy.ndimage.zoom(audio, factor, order=opts.get("rnd_zoom_order", 3))
+  if opts.get("rnd_stretch_switch", 1.) > 0.:
+    opts.get("rnd_stretch_lower"), opts.get("rnd_stretch_upper")  # Mark as read.
   if random_state.uniform(0.0, 1.0) < opts.get("rnd_stretch_switch", 0.2):
     rate = random_state.uniform(opts.get("rnd_stretch_lower", 0.9), opts.get("rnd_stretch_upper", 1.2))
     audio = librosa.effects.time_stretch(audio, rate=rate)
+  if opts.get("rnd_pitch_switch", 1.) > 0.:
+    opts.get("rnd_pitch_lower"), opts.get("rnd_pitch_upper", 1.)  # Mark as read.
   if random_state.uniform(0.0, 1.0) < opts.get("rnd_pitch_switch", 0.2):
     n_steps = random_state.uniform(opts.get("rnd_pitch_lower", -1.), opts.get("rnd_pitch_upper", 1.))
     audio = librosa.effects.pitch_shift(audio, sr=sample_rate, n_steps=n_steps)

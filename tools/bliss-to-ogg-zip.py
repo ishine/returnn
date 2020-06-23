@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ElementTree
 import zipfile
 import shutil
 from subprocess import check_call
+from glob import glob
 
 my_dir = os.path.dirname(os.path.abspath(__file__))
 returnn_dir = os.path.dirname(my_dir)
@@ -58,7 +59,8 @@ def iter_bliss(filename):
   if filename.endswith(".gz"):
     corpus_file = gzip.GzipFile(fileobj=corpus_file)
 
-  context = iter(ElementTree.iterparse(corpus_file, events=('start', 'end')))
+  parser = ElementTree.XMLParser(target=ElementTree.TreeBuilder(), encoding="utf-8")
+  context = iter(ElementTree.iterparse(corpus_file, parser=parser, events=('start', 'end')))
   _, root = next(context)  # get root element
   name_tree = [root.attrib["name"]]
   elem_tree = [root]

@@ -84,7 +84,7 @@ class Dataset(object):
 
   def __init__(self, name=None,
                window=1, context_window=None, chunking=None,
-               seq_ordering='default', random_seed_offset=0,
+               seq_ordering='default', random_seed_offset=None,
                partition_epoch=None, repeat_epoch=None,
                seq_list_filter_file=None, unique_seq_tags=False,
                seq_order_seq_lens_file=None,
@@ -98,7 +98,7 @@ class Dataset(object):
     :param None|str|int|(int,int)|dict|(dict,dict) chunking: "chunk_size:chunk_step"
     :param str seq_ordering: "batching"-option in config. e.g. "default", "sorted" or "random".
       See self.get_seq_order_for_epoch() for more details.
-    :param int random_seed_offset:
+    :param int|None random_seed_offset:
     :param int|None partition_epoch:
     :param int|None repeat_epoch: Repeat the sequences in an epoch this many times. Useful to scale the dataset
       relative to other datasets, e.g. when used in CombinedDataset. Not allowed to be used in combination with
@@ -116,6 +116,8 @@ class Dataset(object):
     self.num_outputs = None  # type: typing.Optional[typing.Dict[str,typing.Tuple[int,int]]]  # tuple is num-classes, len(shape).  # nopep8
     self.window = window
     self.seq_ordering = seq_ordering  # "default", "sorted" or "random". See self.get_seq_order_for_epoch().
+    if random_seed_offset is None:
+      random_seed_offset = self._get_default_random_seed_offset()
     self.random_seed_offset = random_seed_offset
     self.partition_epoch = partition_epoch or 1
     self.repeat_epoch = repeat_epoch or 1
@@ -137,28 +139,7 @@ class Dataset(object):
     self._estimated_num_seqs = estimated_num_seqs
     self.min_chunk_size = min_chunk_size
     self.chunking_variance = chunking_variance
-    if isinstance(chunking, str):
-      if ":" in chunking:
-        chunking = tuple(map(int, chunking.split(":")))
-      else:
-        chunking = int(chunking)
-    if not isinstance(chunking, (tuple, list)):
-      chunking = (chunking, None)
-    chunk_size, chunk_step = chunking
-    if chunk_size is None:
-      chunk_size = 0
-    assert isinstance(chunk_size, (int, dict, NumbersDict))
-    chunk_size = NumbersDict(chunk_size)
-    assert chunk_size == 0 or chunk_size.min_value() > 0, "chunk size must not be negative"
-    self.chunk_size = chunk_size
-    if chunk_step in (None, 0):
-      chunk_step = self.chunk_size
-    assert isinstance(chunk_step, (int, dict, NumbersDict))
-    chunk_step = NumbersDict(chunk_step)
-    if self.chunk_size != 0:
-      assert sorted(chunk_step.keys()) == sorted(chunk_size.keys())
-      assert chunk_step.max_value() > 0, "chunking step must be positive (for some key)"
-    self.chunk_step = chunk_step
+    self.chunk_size, self.chunk_step = self._parse_chunking(chunking)
     if isinstance(context_window, (tuple, list)):
       assert len(context_window) == 2
       for elem in context_window:
@@ -194,6 +175,52 @@ class Dataset(object):
       getattr(self, "epoch", "<unknown>"))
 
   @staticmethod
+  def _get_default_random_seed_offset():
+    """
+    :return: 0 usually
+    :rtype: int
+    """
+    from Config import get_global_config
+    config = get_global_config(raise_exception=False)
+    if not config:
+      return 0
+    if config.is_true("use_horovod") and config.value("horovod_dataset_distribution", "") == "random_seed_offset":
+      # noinspection PyPackageRequirements,PyUnresolvedReferences
+      import horovod.tensorflow as hvd
+      return hvd.rank() * 13
+    return 0
+
+  @staticmethod
+  def _parse_chunking(chunking):
+    """
+    :param None|str|int|(int,int)|dict|(dict,dict)|(NumbersDict,NumbersDict) chunking:
+      as it comes from the config / from the user
+    :return: chunk_size, chunk_step
+    :rtype: (NumbersDict,NumbersDict)
+    """
+    if isinstance(chunking, str):
+      if ":" in chunking:
+        chunking = tuple(map(int, chunking.split(":")))
+      else:
+        chunking = int(chunking)
+    if not isinstance(chunking, (tuple, list)):
+      chunking = (chunking, None)
+    chunk_size, chunk_step = chunking
+    if chunk_size is None:
+      chunk_size = 0
+    assert isinstance(chunk_size, (int, dict, NumbersDict))
+    chunk_size = NumbersDict(chunk_size)
+    assert chunk_size == 0 or chunk_size.min_value() > 0, "chunk size must not be negative"
+    if chunk_step in (None, 0):
+      chunk_step = chunk_size
+    assert isinstance(chunk_step, (int, dict, NumbersDict))
+    chunk_step = NumbersDict(chunk_step)
+    if chunk_size != 0:
+      assert sorted(chunk_step.keys()) == sorted(chunk_size.keys())
+      assert chunk_step.max_value() > 0, "chunking step must be positive (for some key)"
+    return chunk_size, chunk_step
+
+  @staticmethod
   def _load_seq_list_file(filename, use_cache_manager=False, expect_list=True):
     """
     :param str filename:
@@ -216,7 +243,7 @@ class Dataset(object):
       seq_list = open(filename).read().splitlines()
     return seq_list
 
-  def sliding_window(self, xr):
+  def _sliding_window(self, xr):
     """
     :type xr: numpy.ndarray
     :rtype: numpy.ndarray
@@ -230,14 +257,6 @@ class Dataset(object):
       strides=(x.strides[0], x.strides[1] * self.num_inputs) + x.strides
       ).reshape((xr.shape[0], self.num_inputs * self.window))
 
-  # noinspection PyMethodMayBeStatic
-  def preprocess(self, seq):
-    """
-    :type seq: numpy.ndarray
-    :rtype: numpy.ndarray
-    """
-    return seq
-
   def is_cached(self, start, end):
     """
     :param int start: like in load_seqs(), sorted seq idx
@@ -250,33 +269,13 @@ class Dataset(object):
     assert start < end
     return False
 
-  def get_seq_length_nd(self, sorted_seq_idx):
-    """
-    :type sorted_seq_idx: int
-    :rtype: numpy.ndarray
-    :returns the len of the input features and the len of each target sequence.
-    Note: This is deprecated, better use get_seq_length().
-    Attention: Either this method or get_seq_length() needs to be redefined
-    in any subclass of Dataset! However, in new code, just override get_seq_length().
-    """
-    ls = self.get_seq_length(sorted_seq_idx)
-    targets = self.get_target_list()
-    if targets:
-      return numpy.array([ls[key] for key in (["data"] + targets)])
-    else:
-      return numpy.array([ls["data"], 0])
-
   def get_seq_length(self, seq_idx):
     """
     :param int seq_idx:
     :rtype: NumbersDict
     :returns the len of the input features and the len of the target sequence.
     """
-    assert self.__class__.get_seq_length_nd is not Dataset.get_seq_length_nd, "Override get_seq_length."
-    input_len, output_len = self.get_seq_length_nd(seq_idx)
-    d = {"data": input_len}
-    d.update({k: output_len for k in self.get_target_list()})
-    return NumbersDict(d)
+    raise NotImplementedError
 
   def get_num_timesteps(self):
     """

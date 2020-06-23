@@ -4,7 +4,13 @@
 This demonstrates how to use RETURNN as a framework.
 """
 
+import tensorflow as tf
+print("TF version:", tf.__version__)
+
 import returnn  # pip install returnn
+print("RETURNN imported from:", returnn.__file__)
+print("RETURNN version:", returnn.__version__)
+
 from returnn.TFEngine import Engine
 from returnn.Dataset import init_dataset
 from returnn.Config import get_global_config
@@ -28,7 +34,7 @@ config.update(dict(
   },
 
   # training
-  nadam=True,
+  adam=True,
   learning_rate=0.01,
   num_epochs=5,
   debug_add_check_numerics_ops=True,

@@ -32,8 +32,10 @@ from Dataset import Dataset, Batch, BatchSetGenerator, init_dataset
 from LearningRateControl import load_learning_rate_control_from_config, LearningRateControl
 from Log import log
 from Pretrain import pretrain_from_config
-from TFNetwork import TFNetwork, help_on_tf_exception
+import TFCompat
+from TFNetwork import TFNetwork, ExternData, help_on_tf_exception
 from TFUpdater import Updater
+from TFDataPipeline import FeedDictDataProvider, DatasetDataProvider
 from Util import hms, NumbersDict, BackendEngine
 from pprint import pprint
 
@@ -50,12 +52,15 @@ class Runner(object):
   """
 
   # noinspection PyShadowingBuiltins
-  def __init__(self, engine, dataset, batches, train, eval=True, train_flag=None,
+  def __init__(self, engine,
+               dataset_name=None, dataset=None, batches=None,
+               train=False, eval=True, train_flag=None,
                extra_fetches=None, extra_fetches_callback=None):
     """
     :param Engine engine:
-    :param Dataset.Dataset dataset:
-    :param BatchSetGenerator batches:
+    :param str|None dataset_name: "train", "dev" or so
+    :param Dataset.Dataset|None dataset:
+    :param BatchSetGenerator|None batches:
     :param bool train: whether to do updates on the model
     :param bool|None train_flag: normally just as train. but e.g. maybe you want to have the train_flag but not train
     :param bool eval: whether to evaluate (i.e. calculate loss/error)
@@ -71,7 +76,7 @@ class Runner(object):
       dataset=dataset, used_data_keys=engine.network.get_used_data_keys())
     self.engine = engine
     # noinspection PyProtectedMember
-    self.data_provider = self.engine._get_new_data_provider(dataset=dataset, batches=batches)
+    self.data_provider = self.engine._get_data_provider(dataset_name=dataset_name, dataset=dataset, batches=batches)
     assert isinstance(self.data_provider, DataProviderBase)
     if train_flag is None:
       train_flag = train
@@ -222,7 +227,6 @@ class Runner(object):
       self.score.update({key + ":exp": numpy.exp(value) for (key, value) in results.items() if key.startswith("cost:")})
     self.error = {key: value for (key, value) in results.items() if key.startswith("error:")}
     self.num_steps = num_steps
-    self.data_provider.dataset.finish_epoch()
     self.finalized = True
 
   def _get_batch_dim_from_fetches(self, fetches_results):
@@ -389,8 +393,8 @@ class Runner(object):
   def _horovod_signal_broadcast(self, have_more_data=True, error=False):
     """
     :param bool have_more_data: whether we have more data in this instance
-    :param bool error: whether some error occured here
-    :return: whether to stop (because some other instance stopped), whether an error occured
+    :param bool error: whether some error occurred here
+    :return: whether to stop (because some other instance stopped), whether an error occurred
     :rtype: (bool, bool)
     """
     if not self.engine.config.is_true("use_horovod"):
@@ -402,13 +406,13 @@ class Runner(object):
     import horovod.tensorflow as hvd
     from TFUtil import global_tensor
     have_more_data_placeholder = global_tensor(
-      lambda: tf.placeholder(tf.int32, shape=(), name="horovod_have_more_data_placeholder"),
+      lambda: TFCompat.v1.placeholder(tf.int32, shape=(), name="horovod_have_more_data_placeholder"),
       name="horovod_have_more_data_placeholder")  # 0 or 1
     sum_have_data_t = global_tensor(
       lambda: hvd.allreduce(have_more_data_placeholder, average=False),
       name="horovod_sum_have_data")  # 0..size
     have_error_placeholder = global_tensor(
-      lambda: tf.placeholder(tf.int32, shape=(), name="horovod_have_error_placeholder"),
+      lambda: TFCompat.v1.placeholder(tf.int32, shape=(), name="horovod_have_error_placeholder"),
       name="horovod_have_error_placeholder")  # 0 or 1
     sum_have_error_t = global_tensor(
       lambda: hvd.allreduce(have_error_placeholder, average=False),
@@ -457,7 +461,7 @@ class Runner(object):
       :param tf.Variable var:
       :rtype: tf.Tensor
       """
-      return tf.assign(var, hvd.allreduce(var.read_value(), average=True))
+      return TFCompat.v1.assign(var, hvd.allreduce(var.read_value(), average=True))
 
     assign_ops = []
     for var in self.engine.updater.trainable_vars:
@@ -494,11 +498,11 @@ class Runner(object):
       # noinspection PyProtectedMember
       if self.engine._do_save():
         log_runtime_info_to_dir(logdir, config=self.engine.config)
-      writer = tf.summary.FileWriter(logdir)
+      writer = TFCompat.v1.summary.FileWriter(logdir)
     else:
       writer = None
     print("TF: log_dir: %s" % logdir, file=log.v5)
-    run_metadata = tf.RunMetadata()
+    run_metadata = TFCompat.v1.RunMetadata()
     debug_shell_in_runner = self.engine.config.bool("debug_shell_in_runner", False)
     debug_shell_in_runner_step = self.engine.config.int("debug_shell_in_runner_step", 1)
 
@@ -508,8 +512,8 @@ class Runner(object):
 
     coord = self.data_provider.coord
 
-    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
-    self.data_provider.start_threads()
+    threads = TFCompat.v1.train.start_queue_runners(sess=sess, coord=coord)
+    self.data_provider.start_threads(session=sess)
     self.start_time = time.time()
     elapsed_time_tf = 0.0
     step = None
@@ -563,8 +567,8 @@ class Runner(object):
           if self.store_metadata_mod_step and step % self.store_metadata_mod_step == 0:
             # Slow run that stores extra information for debugging.
             print('Storing metadata', file=log.v5)
-            run_options = tf.RunOptions(
-              trace_level=tf.RunOptions.FULL_TRACE)
+            run_options = TFCompat.v1.RunOptions(
+              trace_level=TFCompat.v1.RunOptions.FULL_TRACE)
             # We could use tfdbg.add_debug_tensor_watch here.
             session_run_start_time = time.time()
             fetches_results = sess.run(
@@ -587,6 +591,10 @@ class Runner(object):
             if writer and "summary" in fetches_results:
               writer.add_summary(fetches_results["summary"], step + step_offset)
         except tf.errors.OpError as exc:
+          if isinstance(exc, tf.errors.OutOfRangeError) and isinstance(self.data_provider, DatasetDataProvider):
+            # This means that we got end-of-sequence from the dataset iterator.
+            self.data_provider.current_dataset_reached_end = True
+            break
           print("TensorFlow exception:", exc, file=log.v1)
           # Extra info will be printed below.
           raise
@@ -681,13 +689,14 @@ class Engine(EngineBase):
     self.orig_config = {}  # see _maybe_update_config
     self.devices_config = self._get_devices_config()
     self._check_devices()
-    self.tf_session = None  # type: typing.Optional[tf.Session]
+    self.tf_session = None  # type: typing.Optional[TFCompat.v1.Session]
     self.network = None  # type: typing.Optional[TFNetwork]
     self.updater = None  # type: typing.Optional[Updater]
     self.learning_rate_control = None  # type: typing.Optional[LearningRateControl]
     self._checked_uninitialized_vars = False
     self._merge_all_summaries = None
     self.dataset_batches = {}  # type: typing.Dict[str,BatchSetGenerator]
+    self.dataset_provider = None  # type: typing.Optional[DatasetDataProvider]
     self.train_data = None  # type: typing.Optional[Dataset]
     self.eval_datasets = {}  # type: typing.Dict[str,Dataset]
     self.start_epoch = None  # type: typing.Optional[int]
@@ -768,11 +777,15 @@ class Engine(EngineBase):
       opts["device_count"].setdefault("GPU", 0)
     # Note: We don't set intra_op_parallelism_threads and inter_op_parallelism_threads here anymore
     # because it is safer to do it via setup_tf_thread_pools() which we call very early.
-    print("Setup tf.Session with options %r ..." % opts, file=log.v2)
-    config = tf.ConfigProto(**opts)
+    print("Setup TF session with options %r ..." % opts, file=log.v2)
+    config = TFCompat.v1.ConfigProto(**opts)
     # config.gpu_options.allow_growth=True
+    session_opts = dict(config=config)
+    if self.config.is_true("distributed_tf"):
+      import TFDistributed
+      session_opts["target"] = TFDistributed.get_session_target()
     # For debugging, see tfdbg.LocalCLIDebugWrapperSession.
-    self.tf_session = tf.Session(config=config)
+    self.tf_session = TFCompat.v1.Session(**session_opts)
 
   def _reset_graph(self):
     """
@@ -781,7 +794,7 @@ class Engine(EngineBase):
     """
     if self.network:
       self.network.call_graph_reset_callbacks()
-    tf.reset_default_graph()
+    TFCompat.v1.reset_default_graph()
     self._checked_uninitialized_vars = False
     self._merge_all_summaries = None
     self._const_cache.clear()
@@ -951,8 +964,11 @@ class Engine(EngineBase):
     # In that case, epoch == self.start_epoch - 1.
     is_training = config.value('task', 'train') == 'train'
     is_first_train_epoch = is_training and not epoch
-    self.epoch = epoch or self.start_epoch
-    assert self.epoch
+    self.epoch = epoch
+    if not self.epoch and is_training:
+      assert self.start_epoch >= 1
+      self.epoch = self.start_epoch
+    assert self.epoch, "task %r" % config.value("task", "train")
 
     if self.pretrain:
       # This would be obsolete if we don't want to load an existing model.
@@ -1038,6 +1054,13 @@ class Engine(EngineBase):
         # To be sure, never keep the batch order.
         self.dataset_batches.clear()
         setattr(self, key, value)
+      if key == "chunking" and self.train_data:
+        self.dataset_batches.pop("train", None)
+        # Note that this might not be 100% correct:
+        # E.g. if the dataset explicitly overwrites chunking.
+        # However, we assume, if the user explicitly specify to overwrite chunking now, that it should be applied.
+        # noinspection PyProtectedMember
+        self.train_data.chunk_size, self.train_data.chunk_step = Dataset._parse_chunking(value)
       if key in ["train", "dev", "eval"]:
         self.dataset_batches.pop(key, None)
         from Dataset import init_dataset
@@ -1097,18 +1120,25 @@ class Engine(EngineBase):
       seed = self.config.int("random_seed", None)
       net_random_seed = (epoch * 3 + seed * 5 + 7) % (2 ** 31)
       tf_random_seed = (net_random_seed * 2 + 3) % (2 ** 31)
-    tf.set_random_seed(tf_random_seed)
+    TFCompat.v1.set_random_seed(tf_random_seed)
     from TFUtil import get_global_train_flag_placeholder
     if self.use_dynamic_train_flag:
       train_flag = get_global_train_flag_placeholder()
     else:
       train_flag = False
-    # if False:  # TODO ...
-    #   extern_data = ExternData()
-    #   extern_data.init_from_config(self.config)
-    #   TODO...
+    use_dataset_pipeline = False
+    if self.config.is_true("dataset_pipeline"):
+      use_dataset_pipeline = True
+    extern_data = ExternData()
+    extern_data.init_from_config(config=self.config, auto_create_placeholders=not use_dataset_pipeline)
+    if use_dataset_pipeline:
+      datasets = self.eval_datasets.copy()
+      if self.train_data:
+        datasets["train"] = self.train_data
+      self.dataset_provider = DatasetDataProvider(extern_data=extern_data, datasets=datasets, config=self.config)
     self.network, self.updater = self.create_network(
       config=self.config,
+      extern_data=extern_data,
       rnd_seed=net_random_seed,
       train_flag=train_flag, eval_flag=self.use_eval_flag, search_flag=self.use_search_flag,
       initial_learning_rate=getattr(self, "initial_learning_rate", None),
@@ -1120,12 +1150,13 @@ class Engine(EngineBase):
       import horovod.tensorflow as hvd
       # like hvd.broadcast_global_variables but selected vars only:
       bcast_op = tf.group(*[
-        tf.assign(var, hvd.broadcast(var, root_rank=0))
+        TFCompat.v1.assign(var, hvd.broadcast(var, root_rank=0))
         for var in self.network.get_params_list() + self.network.get_auxiliary_params()])
       self.tf_session.run(bcast_op)
 
   @classmethod
-  def create_network(cls, config, rnd_seed, train_flag, eval_flag, search_flag, net_dict, initial_learning_rate=1.0):
+  def create_network(cls, config, rnd_seed, train_flag, eval_flag, search_flag, net_dict,
+                     extern_data=None, initial_learning_rate=1.0):
     """
     :param Config.Config config:
     :param int rnd_seed:
@@ -1133,6 +1164,7 @@ class Engine(EngineBase):
     :param float initial_learning_rate:
     :param bool eval_flag:
     :param bool search_flag:
+    :param ExternData|None extern_data:
     :param dict[str,dict[str]] net_dict:
     :return: network, updater
     :rtype: (TFNetwork, Updater|None)
@@ -1140,6 +1172,7 @@ class Engine(EngineBase):
     network = TFNetwork(
       name="root",
       config=config,
+      extern_data=extern_data,
       rnd_seed=rnd_seed,
       train_flag=train_flag,
       eval_flag=eval_flag,
@@ -1189,10 +1222,10 @@ class Engine(EngineBase):
     self._init_network(net_desc)
     if self.is_pretrain_epoch() and not self.pretrain.copy_output_layer:
       # "ifpossible" logic handled below. copy_output_layer=True is currently not enforced.
-      for l in self.network.get_output_layers():
-        if l.name in old_network_params.values_dict:
-          print("suspend copying of output layer: " + l.name, file=log.v2)
-          old_network_params.values_dict.pop(l.name)
+      for layer in self.network.get_output_layers():
+        if layer.name in old_network_params.values_dict:
+          print("suspend copying of output layer: " + layer.name, file=log.v2)
+          old_network_params.values_dict.pop(layer.name)
     # Optionally call some callback from config.
     # Do this before we call network.set_params_by_serialized, to allow to remove entries from old_network_params.
     if self.config.has("init_new_network_callback"):
@@ -1358,20 +1391,22 @@ class Engine(EngineBase):
     self.updater.set_learning_rate(self.learning_rate, session=self.tf_session)
     trainer = Runner(
       engine=self,
-      dataset=self.train_data, batches=train_batches,
+      dataset_name="train", dataset=self.train_data, batches=train_batches,
       train=self.network.layers_desc.get("#trainable", True))
     trainer.run(report_prefix=("pre" if self.is_pretrain_epoch() else "") + "train epoch %s" % self.epoch)
 
     if not trainer.finalized:
       if trainer.device_crash_batch is not None:  # Otherwise we got an unexpected exception - a bug in our code.
-        self.save_model(self.get_epoch_model_filename() + ".crash_%i" % trainer.device_crash_batch)
+        if self.model_filename:
+          self.save_model(self.get_epoch_model_filename() + ".crash_%i" % trainer.device_crash_batch)
       print("Trainer not finalized, quitting.", file=log.v1)
       sys.exit(1)
 
     if any(numpy.isinf(list(trainer.score.values()))) or any(numpy.isnan(list(trainer.score.values()))):
       print("Model seems broken, got inf or nan final score: %s" % trainer.score, file=log.v1)
       if self.config.bool("stop_on_nonfinite_train_score", True):
-        self.save_model(self.get_epoch_model_filename() + ".broken")
+        if self.model_filename:
+          self.save_model(self.get_epoch_model_filename() + ".broken")
         sys.exit(1)
 
     should_call_graph_reset_callbacks = False
@@ -1607,7 +1642,7 @@ class Engine(EngineBase):
         print("reusing previous dataset batch order for %r dataset" % dataset_name, file=log.v4)
         self.dataset_batches[dataset_name].reset()
       tester = Runner(
-        engine=self, dataset=dataset, batches=self.dataset_batches[dataset_name],
+        engine=self, dataset_name=dataset_name, dataset=dataset, batches=self.dataset_batches[dataset_name],
         train=train, train_flag=train_flag,
         extra_fetches=extra_fetches, extra_fetches_callback=extra_fetches_callback)
       tester.run(report_prefix=self.get_epoch_str() + " %r eval" % dataset_name)
@@ -1780,39 +1815,52 @@ class Engine(EngineBase):
       return
     with tf.name_scope("check_uninitialized_vars"):
       # Like tf.report_uninitialized_variables().
-      var_list = tf.global_variables() + tf.local_variables()
+      var_list = TFCompat.v1.global_variables() + TFCompat.v1.local_variables()
       if not var_list:
         return
       # Get a 1-D boolean tensor listing whether each variable is initialized.
       var_mask = tf.logical_not(tf.stack(
-        [tf.is_variable_initialized(v) for v in var_list])).eval(session=self.tf_session)
+        [TFCompat.v1.is_variable_initialized(v) for v in var_list])).eval(session=self.tf_session)
       assert len(var_mask) == len(var_list)
       uninitialized_vars = [v for (v, mask) in zip(var_list, var_mask) if mask]
       if uninitialized_vars:
         print("Note: There are still these uninitialized variables: %s" % [v.name for v in uninitialized_vars],
               file=log.v3)
-        self.tf_session.run(tf.variables_initializer(uninitialized_vars))
+        self.tf_session.run(TFCompat.v1.variables_initializer(uninitialized_vars))
       self._checked_uninitialized_vars = True
 
-  def _get_new_data_provider(self, dataset, batches):
+  def _get_data_provider(self, dataset_name=None, dataset=None, batches=None, feed_dict=None):
     """
-    :param Dataset.Dataset dataset:
-    :param BatchSetGenerator batches:
-    :rtype: TFDataPipeline.FeedDictDataProvider
+    :param str|None dataset_name:
+    :param Dataset.Dataset|None dataset:
+    :param BatchSetGenerator|None batches:
+    :param bool|None feed_dict:
+    :rtype: FeedDictDataProvider|DatasetDataProvider
     """
-    batch_slice = None
-    if self.config.is_true("use_horovod"):
-      # noinspection PyPackageRequirements,PyUnresolvedReferences
-      import horovod.tensorflow as hvd
-      batch_slice = slice(hvd.rank(), None, hvd.size())
-    from TFDataPipeline import FeedDictDataProvider
-    data_provider = FeedDictDataProvider(
-      tf_session=self.tf_session, extern_data=self.network.extern_data,
-      data_keys=self.network.get_used_data_keys(),
-      dataset=dataset, batches=batches,
-      batch_slice=batch_slice,
-      enforce_min_len1=self.config.is_true("enforce_min_len1", False))
-    return data_provider
+    if self.dataset_provider and feed_dict is not True and dataset_name:
+      self.dataset_provider.set_current_dataset(dataset_name=dataset_name)
+      return self.dataset_provider
+    else:
+      if self.dataset_provider and feed_dict is not False:
+        print("WARNING: dataset_provider is set (via dataset_pipeline) but not used", file=log.v2)
+      batch_slice = None
+      if self.config.is_true("use_horovod"):
+        ds_dist_opt = self.config.value("horovod_dataset_distribution", "shard")
+        if ds_dist_opt == "shard":
+          # noinspection PyPackageRequirements,PyUnresolvedReferences
+          import horovod.tensorflow as hvd
+          batch_slice = slice(hvd.rank(), None, hvd.size())
+        elif ds_dist_opt == "random_seed_offset":
+          pass  # nothing needed to be done here
+        else:
+          raise Exception("invalid horovod_dataset_distribution %r" % ds_dist_opt)
+      data_provider = FeedDictDataProvider(
+        tf_session=self.tf_session, extern_data=self.network.extern_data,
+        data_keys=self.network.get_used_data_keys(),
+        dataset=dataset, batches=batches,
+        batch_slice=batch_slice,
+        enforce_min_len1=self.config.is_true("enforce_min_len1", False))
+      return data_provider
 
   def get_specific_feed_dict(self, dataset, seq_idx):
     """
@@ -1833,7 +1881,7 @@ class Engine(EngineBase):
       batch.init_with_one_full_sequence(seq_idx=seq_idx, dataset=dataset)
     batch_generator = iter([batch])
     batches = BatchSetGenerator(dataset, generator=batch_generator)
-    data_provider = self._get_new_data_provider(dataset=dataset, batches=batches)
+    data_provider = self._get_data_provider(dataset=dataset, batches=batches, feed_dict=True)
     feed_dict, _ = data_provider.get_feed_dict(single_threaded=True)
     return feed_dict
 
@@ -2269,7 +2317,7 @@ class Engine(EngineBase):
 
   def search_single_seq(self, sources, output_layer_name=None):
     """
-    :param list[numpy.ndarray] sources: source sequences as a list of indices
+    :param list[numpy.ndarray|list[int]] sources: source sequences as a list of indices
     :param str|None output_layer_name: e.g. "output". if not set, will read from config "search_output_layer"
     :return: list of all hyps, which is a tuple of score and string
     :rtype: list[(float,str)]
@@ -2527,7 +2575,7 @@ class Engine(EngineBase):
           self.wfile.write(b"]\n")
 
         else:
-          self.wfile(("%r\n" % first_best_txt).encode("utf8"))
+          self.wfile.write(("%r\n" % first_best_txt).encode("utf8"))
 
     print("Simple search web server, listening on port %i." % port, file=log.v2)
     server_address = ('', port)
@@ -2546,6 +2594,7 @@ def get_global_engine():
   import sys
   main_mod = sys.modules["__main__"]  # should be rnn.py
   if isinstance(getattr(main_mod, "engine", None), Engine):
+    # noinspection PyUnresolvedReferences
     return main_mod.engine
   # Maybe __main__ is not rnn.py, or config not yet loaded.
   # Anyway, try directly. (E.g. for SprintInterface.)

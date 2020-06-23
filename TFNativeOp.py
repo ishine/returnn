@@ -11,6 +11,7 @@ import tensorflow as tf
 from threading import RLock
 
 import NativeOp
+import TFCompat
 import TFUtil
 from Util import camel_case_to_snake_case
 
@@ -740,7 +741,7 @@ class NativeLstmCell(RecSeqCellOp):
     :returns: shape (time,batch,n_hidden), shape (batch,n_hidden)
     :rtype: (tf.Tensor, tf.Tensor)
     """
-    rec_weights = tf.get_variable(
+    rec_weights = TFCompat.v1.get_variable(
       name="W_re", shape=(self.n_hidden, self.n_hidden * 4), initializer=recurrent_weights_initializer)
     TFUtil.set_param_axes_split_info(rec_weights, [[self.n_hidden], [self.n_hidden] * 4])
     out, _, final_state = self.op(
@@ -800,9 +801,9 @@ class NativeLstmLowMemCell(RecSeqCellOp):
     :returns: shape (time,batch,n_hidden), shape (batch,n_hidden)
     :rtype: (tf.Tensor, tf.Tensor)
     """
-    weights = tf.get_variable(
+    weights = TFCompat.v1.get_variable(
       name="W", shape=(self.n_input_dim + self.n_hidden, self.n_hidden * 4), initializer=recurrent_weights_initializer)
-    b = tf.get_variable(name="b", shape=(self.n_hidden * 4,), initializer=tf.zeros_initializer())
+    b = TFCompat.v1.get_variable(name="b", shape=(self.n_hidden * 4,), initializer=tf.zeros_initializer())
     TFUtil.set_param_axes_split_info(weights, [[self.n_input_dim, self.n_hidden], [self.n_hidden] * 4])
     TFUtil.set_param_axes_split_info(b, [[self.n_hidden] * 4])
     out, _, final_state = self.op(
@@ -843,7 +844,7 @@ class NativeLstm2(RecSeqCellOp):
     :rtype: (tf.Tensor, tf.Tensor)
     """
     from tensorflow.python.ops.nn import rnn_cell
-    weights = tf.get_variable(
+    weights = TFCompat.v1.get_variable(
       name="W_re", shape=(self.n_hidden, self.n_hidden * 4), initializer=recurrent_weights_initializer)
     TFUtil.set_param_axes_split_info(weights, [[self.n_hidden], [self.n_hidden] * 4])
     if self.rec_weight_dropout:
@@ -963,11 +964,11 @@ class TwoDNativeLstmCell(RecSeqCellOp):
     :returns: shape (src_len, batch, n_hidden), shape(trg_len, src_len, batch, n_hidden), shape (trg_len, src_len, batch, n_hidden*5)
     :rtype: (tf.Tensor, tf.Tensor)
     """
-    Vh_re = tf.get_variable(
+    Vh_re = TFCompat.v1.get_variable(
       name="Vh_re", shape=(self.n_hidden, self.n_hidden * 5), initializer=recurrent_weights_initializer)
-    Vv_re = tf.get_variable(
+    Vv_re = TFCompat.v1.get_variable(
       name="Vv_re", shape=(self.n_hidden, self.n_hidden * 5), initializer=recurrent_weights_initializer)
-    W_re = tf.get_variable(
+    W_re = TFCompat.v1.get_variable(
       name="W_re", shape=(self.n_input_dim, self.n_hidden * 5), initializer=recurrent_weights_initializer)
     TFUtil.set_param_axes_split_info(W_re, [[self.n_input_dim], [self.n_hidden] * 5])
 
@@ -1029,7 +1030,7 @@ class TwoDNativeLstmCell(RecSeqCellOp):
 
     def weighted_pooling(src_mask, out_complete, target):
       trg_features = target.shape[2]
-      W_att = tf.get_variable(  # (trg_features, n_hidden)
+      W_att = TFCompat.v1.get_variable(  # (trg_features, n_hidden)
         name="W_att", shape=(trg_features, self.n_hidden), initializer=recurrent_weights_initializer)
 
       # if we assume the following shapes:
@@ -1219,7 +1220,7 @@ def tf_fast_bw_fsa_staircase(seq_lens, **opts):
       fsa.start_end_states.shape, len(seq_lens_), seq_lens_)
     return fsa.edges.astype("int32"), fsa.weights.astype("float32"), fsa.start_end_states.astype("int32")
 
-  edges, weights, start_end_states = tf.py_func(
+  edges, weights, start_end_states = TFCompat.v1.py_func(
     py_fast_bw_fsa_staircase_wrapper,
     [seq_lens],
     [tf.int32, tf.float32, tf.int32],
@@ -1595,7 +1596,7 @@ def _debug_dumped_fast_baum_welch(prefix, postfix=".dump"):
   :rtype: (numpy.ndarray. numpy.ndarray)
   """
   with tf.Graph().as_default() as graph:
-    with tf.Session(graph=graph) as session:
+    with TFCompat.v1.Session(graph=graph) as session:
       arg_names = {
         "am_scores": None, "edges": None, "weights": None, "start_end_states": None, "float_idx": "index",
         "state_buffer": None}
@@ -1621,6 +1622,9 @@ def have_blocksparse_requirements():
     return False
   min_compute_capability = TFUtil.get_available_gpu_min_compute_capability()
   if min_compute_capability < 3.5:
+    return False
+  path = os.path.dirname(__file__) + "/extern/blocksparse/blocksparse"
+  if not os.path.exists(path):  # not checked out?
     return False
   return True
 

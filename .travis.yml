@@ -34,7 +34,7 @@ install:
   - echo "floatX = float32" >> ~/.theanorc
   - python --version
   - python -c "import numpy; print(numpy.version.full_version)"
-  - python -c "import tensorflow as tf; print(tf.GIT_VERSION, tf.VERSION)"
+  - python -c "import tensorflow as tf; print(tf.__git_version__, tf.__version__)"
   - python -c "import theano; print(theano.__version__)"
 
 # https://docs.travis-ci.com/user/environment-variables/
@@ -65,6 +65,7 @@ env:
     - TEST=GeneratingDataset
     - TEST=hdf_dump
     - TEST=HDFDataset
+    - TEST=TranslationDataset
     - TEST=LearningRateControl
     - TEST=Log
     - TEST=multi_target
@@ -89,9 +90,31 @@ matrix:
   include:
     - env: RUN=tests/pylint.py
     - env: RUN=tests/pycharm-inspect.py
+    - env: TEST=TFEngine TF_PACKAGE=tensorflow
+    - env: TEST=TFNativeOp TF_PACKAGE=tensorflow
+    - env: TEST=TFNetworkLayer TF_PACKAGE=tensorflow
+    - env: TEST=TFNetworkRecLayer TF_PACKAGE=tensorflow
+    - env: TEST=TFNetworkSigProcLayer TF_PACKAGE=tensorflow
+    - env: TEST=TFUpdater TF_PACKAGE=tensorflow
+    - env: TEST=TFUtil TF_PACKAGE=tensorflow
+    # The following are working now, so we do not allow failures anymore.
+    # Also we fix a specific TF version, like above.
+    - env: TEST=TFEngine TF_PACKAGE=tensorflow==2.2.0
+    - env: TEST=TFNativeOp TF_PACKAGE=tensorflow==2.2.0
+    - env: TEST=TFNetworkLayer TF_PACKAGE=tensorflow==2.2.0
+    - env: TEST=TFNetworkRecLayer TF_PACKAGE=tensorflow==2.2.0
+    - env: TEST=TFUpdater TF_PACKAGE=tensorflow==2.2.0
+    - env: TEST=TFUtil TF_PACKAGE=tensorflow==2.2.0
   allow_failures:
     - env: RUN=tests/pylint.py
     - env: RUN=tests/pycharm-inspect.py
+    - env: TEST=TFEngine TF_PACKAGE=tensorflow
+    - env: TEST=TFNativeOp TF_PACKAGE=tensorflow
+    - env: TEST=TFNetworkLayer TF_PACKAGE=tensorflow
+    - env: TEST=TFNetworkRecLayer TF_PACKAGE=tensorflow
+    - env: TEST=TFNetworkSigProcLayer TF_PACKAGE=tensorflow
+    - env: TEST=TFUpdater TF_PACKAGE=tensorflow
+    - env: TEST=TFUtil TF_PACKAGE=tensorflow
   fast_finish: true
 
 # command to run tests

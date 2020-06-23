@@ -18,6 +18,7 @@ from TFNetwork import *
 from TFNetworkLayer import *
 from TFEngine import *
 from Log import log
+import TFCompat
 import TFUtil
 TFUtil.debug_register_better_repr()
 
@@ -26,7 +27,7 @@ log.initialize(verbosity=[5])
 @contextlib.contextmanager
 def make_scope():
   with tf.Graph().as_default() as graph:
-    with tf.Session(graph=graph) as session:
+    with TFCompat.v1.Session(graph=graph) as session:
       yield session
 
 network = {}
@@ -303,11 +304,11 @@ def build_resnet(conv_time_dim):
   else:
     dr = (1, 1)
 
-  """ 
+  """
   See https://arxiv.org/pdf/1611.09288.pdf
   Fully connected layers are equivalent to, and can be trivially replaced by,
-  convolutional layers with kernel (1×1) (except the first convolution which 
-  has kernel size matching the output of the conv stack before being flattened 
+  convolutional layers with kernel (1×1) (except the first convolution which
+  has kernel size matching the output of the conv stack before being flattened
   for the fully connected layers).
   """
   add_sequential_layer("fc1" , {"class": "conv", "n_out": 2048, "filter_size": (3, 2), "auto_use_channel_first": NCHW,
@@ -362,11 +363,11 @@ def test_ResNet():
     # Making two time-steps
     time_size = window_size + 1
     data_layer_win = Data(name='win', shape=(window_size, 64, 3), dim = 3, batch_dim_axis = 0, sparse = False)
-    data_layer_win.placeholder = tf.placeholder(shape=(None, window_size, 64, 3), dtype=tf.float32)
+    data_layer_win.placeholder = TFCompat.v1.placeholder(shape=(None, window_size, 64, 3), dtype=tf.float32)
 
     data_layer_nowin = Data(name='nowin', shape=(time_size, 64, 3), dim = 3, batch_dim_axis = 0,
                             time_dim_axis = 1, sparse = False)
-    data_layer_nowin.placeholder = tf.placeholder(shape=(None, time_size, 64, 3), dtype=tf.float32)
+    data_layer_nowin.placeholder = TFCompat.v1.placeholder(shape=(None, time_size, 64, 3), dtype=tf.float32)
 
     extern_data_nowin = ExternData()
     extern_data_nowin.data['data'] = data_layer_nowin

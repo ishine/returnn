@@ -19,11 +19,11 @@ from Util import NotSpecified, NativeCodeCompiler
 
 class CollectionKeys:
   """
-  Extension of :class:`tf.GraphKeys`
+  Extension of :class:`tf.compat.v1.GraphKeys`
   """
   RETURNN_LAYERS = "_RETURNN_layers"  # LayerBase instances
   RETURNN_NET_STACK = "_RETURNN_network_stack"  # TFNetwork instance stack
-  STATE_VARS = "_RETURNN_state_vars"  # tf.Variable, like e.g. tf.GraphKeys.LOCAL_VARIABLES
+  STATE_VARS = "_RETURNN_state_vars"  # tf.Variable, like e.g. tf.compat.v1.GraphKeys.LOCAL_VARIABLES
 
 
 def tf_version_tuple():
@@ -585,17 +585,19 @@ class Data(object):
         dim = self.batch_shape[self.feature_dim_axis]
     self.dim = dim  # type: typing.Optional[int]
     if placeholder is None and auto_create_placeholders:
+      import TFCompat
       with tf.name_scope("extern_data/placeholders/%s/" % name):
-        placeholder = tf.placeholder(**self.get_placeholder_kwargs(with_batch=True))
+        placeholder = TFCompat.v1.placeholder(**self.get_placeholder_kwargs(with_batch=True))
     self.placeholder = placeholder  # type: tf.Tensor  # this will hold the data value itself
     # The size_placeholder is for each variable length dimension in shape, i.e. excluding the batch-dim.
     if size_placeholder is not None:
       size_placeholder = size_placeholder.copy()
     if size_placeholder is None and auto_create_placeholders:
+      import TFCompat
       size_placeholder = {}  # type: typing.Dict[int,tf.Tensor]
       with tf.name_scope("extern_data/placeholders/%s/" % name):
         for axis in self.get_axes_with_size():
-          size_placeholder[axis] = tf.placeholder(**self.get_size_placeholder_kwargs(axis))
+          size_placeholder[axis] = TFCompat.v1.placeholder(**self.get_size_placeholder_kwargs(axis))
           tag = DimensionTag(
             description="%s:var:extern_data:%s" % (
               "time" if self.get_batch_axis(axis) == self.time_dim_axis else "spatial%i" % axis, self.name),
@@ -678,7 +680,7 @@ class Data(object):
   def get_placeholder_kwargs(self, with_batch=True):
     """
     :param bool with_batch:
-    :return: kwargs for tf.placeholder
+    :return: kwargs for tf.compat.v1.placeholder
     :rtype: dict[str]
     """
     return dict(name=self.name, dtype=self.dtype, shape=self.batch_shape if with_batch else self.shape)
@@ -695,7 +697,7 @@ class Data(object):
     """
     :param int axis:
     :param bool with_batch:
-    :return: kwargs for tf.placeholder
+    :return: kwargs for tf.compat.v1.placeholder
     :rtype: dict[str]
     """
     # For each batch a separate size.
@@ -1852,9 +1854,9 @@ class Data(object):
     return flatten_with_seq_len_mask(self.placeholder, seq_lens, batch_dim_axis=self.batch_dim_axis,
                                      time_dim_axis=self.time_dim_axis)
 
-  def get_placeholder_flattened(self, keep_dims=False):
+  def get_placeholder_flattened(self, keepdims=False):
     """
-    :param bool keep_dims: if set, it will add broadcast dimensions after the flattening behind the first axis
+    :param bool keepdims: if set, it will add broadcast dimensions after the flattening behind the first axis
     :rtype: tf.Tensor
     :return: placeholder where all dynamic axes are flattened into a single axis.
       e.g. for the usual case (batch, time, dim), it becomes (batch'|time', dim),
@@ -1886,7 +1888,7 @@ class Data(object):
         [shape[i] for i in range(ndim) if i not in dyn_axes])
       dyn_axes = [0]
     assert dyn_axes == [0]
-    if keep_dims and orig_num_dyn_axes >= 2:
+    if keepdims and orig_num_dyn_axes >= 2:
       for i in orig_dyn_axes:
         if i not in dyn_axes:
           x = tf.expand_dims(x, axis=i)
@@ -2560,7 +2562,7 @@ class CustomUpdate(object):
   def update_var(self, var):
     """
     :param tf.Variable var: variable to update
-    :return: operation which updates the variable, e.g. tf.assign_add(var, something)
+    :return: operation which updates the variable, e.g. tf.compat.v1.assign_add(var, something)
     :rtype: tf.Operation
     """
     raise NotImplementedError
@@ -2584,7 +2586,8 @@ class CustomUpdateExpAverage(CustomUpdate):
     :param tf.Variable var:
     :rtype: tf.Tensor
     """
-    return tf.assign_add(var, self.alpha * (self.average - var))  # ((alpha - 1) * old + alpha * new)
+    import TFCompat
+    return TFCompat.v1.assign_add(var, self.alpha * (self.average - var))  # ((alpha - 1) * old + alpha * new)
 
 
 def set_param_axes_split_info(param, axes_split_info):
@@ -2738,7 +2741,7 @@ class OutputWithActivation(object):
   def get_log_output(self):
     """
     :rtype: tf.Tensor
-    :return: tf.log(output)
+    :return: tf.math.log(output)
     """
     if self.is_softmax_act_func():
       return tf.nn.log_softmax(self.x)
@@ -2764,7 +2767,7 @@ def variable_scalar_summaries_dict(x, name=None):
   if not name:
     name = get_base_name(x)
   if x.dtype.is_integer:
-    x_float = tf.to_float(x)
+    x_float = tf.cast(x, tf.float32)
   else:
     x_float = x
   mean = tf.reduce_mean(x_float)
@@ -2786,15 +2789,16 @@ def variable_summaries(var, name=None, with_histogram=False):
   :param tf.Tensor|tf.Variable var:
   :param str name:
   :param bool with_histogram: adds histogram. note that this can add noticeable overhead
-  :return: nothing, use :func:`tf.summary.merge_all()` to collect the summaries
+  :return: nothing, use :func:`tf.compat.v1.summary.merge_all()` to collect the summaries
   """
+  import TFCompat
   if var.dtype == tf.string:
     return
   if not name:
     name = get_base_name(var)
   with tf.name_scope('summaries_%s' % name):
     for k, v in variable_scalar_summaries_dict(var, name=name).items():
-      tf.summary.scalar(k, v)
+      TFCompat.v1.summary.scalar(k, v)
     if with_histogram:
       tf.summary.histogram('%s_histogram' % name, var)
 
@@ -2818,10 +2822,11 @@ def get_valid_scope_name_from_str(s):
 
 def get_current_var_scope_name():
   """
-  :return: current absolute variable scope name, via tf.variable_scope
+  :return: current absolute variable scope name, via tf.compat.v1.variable_scope
   :rtype: str
   """
-  v = tf.get_variable_scope()
+  import TFCompat
+  v = TFCompat.v1.get_variable_scope()
   return v.name
 
 
@@ -2835,8 +2840,9 @@ def get_current_name_scope():
   Note that this is a private member and might break at some point.
   Note also that this does not need to be the same as get_current_var_scope_name().
   """
+  import TFCompat
   # noinspection PyProtectedMember
-  return tf.get_default_graph()._name_stack or ""
+  return TFCompat.v1.get_default_graph()._name_stack or ""
 
 
 @contextlib.contextmanager
@@ -2845,17 +2851,18 @@ def reuse_name_scope(name, absolute=None, **kwargs):
   Context manager to reuse an already created scope.
   We try to both set the variable scope and the name scope.
 
-  :param str|tf.VariableScope name: relative or absolute name scope (absolute if absolute=True or if tf.VariableScope).
+  :param str|TFCompat.v1.VariableScope name: relative or absolute name scope (absolute if absolute=True or if TFCompat.v1.VariableScope).
     must not end with "/".
   :param bool absolute: if True it will be absolute
-  :param kwargs: passed on to `tf.variable_scope`
+  :param kwargs: passed on to `tf.compat.v1.variable_scope`
   :return: yields the variable_scope
   """
+  import TFCompat
   kwargs = kwargs.copy()
-  parent_var_scope = None  # type: typing.Optional[tf.VariableScope]
+  parent_var_scope = None  # type: typing.Optional[TFCompat.v1.VariableScope]
   if not absolute:
-    parent_var_scope = tf.get_variable_scope()
-  if isinstance(name, tf.VariableScope):
+    parent_var_scope = TFCompat.v1.get_variable_scope()
+  if isinstance(name, TFCompat.v1.VariableScope):
     parent_var_scope = name
     name = name.name
     if absolute is not None:
@@ -2873,7 +2880,7 @@ def reuse_name_scope(name, absolute=None, **kwargs):
   if not absolute:
     assert name
     # First figure out the absolute name scope which we want to reuse/set.
-    # The current name scope is more reliable because tf.variable_scope
+    # The current name scope is more reliable because tf.compat.v1.variable_scope
     # will always also set the name scope.
     current_name_scope = get_current_name_scope()
     if current_name_scope:
@@ -2888,16 +2895,16 @@ def reuse_name_scope(name, absolute=None, **kwargs):
   # which is not what we want.
   with tf.name_scope(abs_name):
     # tf.name_scope will not set the variable scope.
-    # tf.variable_scope will also set the name scope, but the logic is broken
+    # tf.compat.v1.variable_scope will also set the name scope, but the logic is broken
     # for absolute name scopes, thus we had to do the tf.name_scope manually above.
     # We create the dummy_var_scope to force it to reuse that name,
-    # and the trailing "/" will work-around the broken tf.variable_scope() usage of tf.name_scope().
+    # and the trailing "/" will work-around the broken tf.compat.v1.variable_scope() usage of tf.name_scope().
     # Afterwards we fix that name again.
     # Note that the reuse-argument might be miss-leading in this context:
-    # It means that tf.get_variable() will search for existing variables and errors otherwise.
-    var_scope = tf.VariableScope(name=abs_name, reuse=kwargs.get("reuse", None))
-    with tf.variable_scope(var_scope, **kwargs) as scope:
-      assert isinstance(scope, tf.VariableScope)
+    # It means that TFCompat.v1.get_variable() will search for existing variables and errors otherwise.
+    var_scope = TFCompat.v1.VariableScope(name=abs_name, reuse=kwargs.get("reuse", None))
+    with TFCompat.v1.variable_scope(var_scope, **kwargs) as scope:
+      assert isinstance(scope, TFCompat.v1.VariableScope)
       # remove "/" from the end of the var-scope.
       # This is a work-around to fix up the variable scope behavior for nested variable scopes.
       # Warning: This might break at some future point.
@@ -2913,14 +2920,15 @@ def reuse_name_scope(name, absolute=None, **kwargs):
 @contextlib.contextmanager
 def opt_reuse_name_scope(name):
   """
-  :param str|tf.VariableScope name:
+  :param str|TFCompat.v1.VariableScope name:
   :return: yields the variable_scope
   """
+  import TFCompat
   if name:
     with reuse_name_scope(name) as scope:
       yield scope
   else:
-    yield tf.get_variable_scope()
+    yield TFCompat.v1.get_variable_scope()
 
 
 def get_name_scope_of_tensor(x):
@@ -3015,6 +3023,7 @@ class _ScaledGradientBuilder(object):
     """
     grad_name = "ScaledGradient%d" % self.num_calls
 
+    import TFCompat
     from tensorflow.python.framework import ops
 
     # noinspection PyUnusedLocal
@@ -3022,7 +3031,7 @@ class _ScaledGradientBuilder(object):
     def _flip_gradients(op, grad):
       return [grad * scale]
 
-    g = tf.get_default_graph()
+    g = TFCompat.v1.get_default_graph()
     with g.gradient_override_map({"Identity": grad_name}):
       y = tf.identity(x, name="scaled_gradient_identity")
 
@@ -3083,8 +3092,10 @@ def identity_with_check_numerics(x, with_grad=True, name="identity_with_check_nu
   :param str name:
   :rtype: tf.Tensor
   """
+  import TFCompat
   with tf.name_scope(name):
-    with tf.control_dependencies([tf.check_numerics(x, message="%s check_numerics for tensor %s" % (name, x.name))]):
+    with tf.control_dependencies([
+          TFCompat.v1.check_numerics(x, message="%s check_numerics for tensor %s" % (name, x.name))]):
       if with_grad:
         # An alternative to gradient_override_map would be :class:`CustomGradient` which is more generic.
         # noinspection PyUnusedLocal
@@ -3097,7 +3108,7 @@ def identity_with_check_numerics(x, with_grad=True, name="identity_with_check_nu
           grad_func=_identity_with_check_numerics_grad,
           assert_is_same=False)
 
-        g = tf.get_default_graph()
+        g = TFCompat.v1.get_default_graph()
         with g.gradient_override_map({"Identity": grad_name}):
           y = tf.identity(x)
 
@@ -3114,6 +3125,7 @@ def check_input_ndim(x, ndim):
   :return: x with check added
   :rtype: tf.Tensor
   """
+  import TFCompat
   dyn_shape = x.get_shape()
   if dyn_shape.ndims is not None:
     assert dyn_shape.ndims == ndim
@@ -3121,7 +3133,7 @@ def check_input_ndim(x, ndim):
   # Need to fall-back to runtime check.
   with tf.name_scope("check_input_ndim"):
     with tf.control_dependencies(
-      [tf.assert_equal(tf.rank(x), ndim, data=["ndim not %i" % ndim, tf.shape(x)])]):
+      [TFCompat.v1.assert_equal(tf.rank(x), ndim, data=["ndim not %i" % ndim, tf.shape(x)])]):
       return tf.identity(x, "identity_with_ndim_check")
 
 
@@ -3133,6 +3145,7 @@ def check_input_ndim_equal_offset(x, y, y_ndim_offset=0):
   :return: x with check added such that ndim(x) == ndim(y) + y_ndim_offset
   :rtype: tf.Tensor
   """
+  import TFCompat
   x_dyn_shape = x.get_shape()
   y_dyn_shape = y.get_shape()
   if x_dyn_shape.ndims is not None and y_dyn_shape.ndims is not None:
@@ -3141,9 +3154,10 @@ def check_input_ndim_equal_offset(x, y, y_ndim_offset=0):
   # Need to fall-back to runtime check.
   with tf.name_scope("check_input_ndim_equal_offset"):
     with tf.control_dependencies(
-      [tf.assert_equal(tf.rank(x), tf.rank(y) + y_ndim_offset,
-                       data=["ndim not equal with offset %i" % y_ndim_offset,
-                             tf.shape(x), tf.shape(y)])]):
+      [TFCompat.v1.assert_equal(
+          tf.rank(x), tf.rank(y) + y_ndim_offset,
+          data=["ndim not equal with offset %i" % y_ndim_offset,
+          tf.shape(x), tf.shape(y)])]):
       return tf.identity(x, "identity_with_ndim_equal_check")
 
 
@@ -3155,6 +3169,7 @@ def check_input_dim(x, axis, dim):
   :return: x with check added
   :rtype: tf.Tensor
   """
+  import TFCompat
   dyn_shape = x.get_shape()
   if dyn_shape.ndims is not None and isinstance(dim, int):
     if dyn_shape.dims[axis].value is not None:
@@ -3162,8 +3177,9 @@ def check_input_dim(x, axis, dim):
       return x
   # Need to fall-back to runtime check.
   with tf.name_scope("check_input_dim"):
-    with tf.control_dependencies(
-      [tf.assert_equal(tf.shape(x)[axis], dim, data=["shape[%i]:" % (axis,), tf.shape(x), "!=", "dim:", dim])]):
+    with tf.control_dependencies([
+          TFCompat.v1.assert_equal(
+            tf.shape(x)[axis], dim, data=["shape[%i]:" % (axis,), tf.shape(x), "!=", "dim:", dim])]):
       return tf.identity(x, "identity_with_dim_check")
 
 
@@ -3177,6 +3193,7 @@ def check_dim_equal(x, x_axis, y, y_axis, extra_msg=()):
   :return: x with check added that shape(x)[x_axis] == shape(y)[y_axis]
   :rtype: tf.Tensor
   """
+  import TFCompat
   x_dyn_shape = x.get_shape()
   y_dyn_shape = y.get_shape()
   if x_dyn_shape.ndims is not None and y_dyn_shape.ndims is not None:
@@ -3188,7 +3205,7 @@ def check_dim_equal(x, x_axis, y, y_axis, extra_msg=()):
     shape_x = tf.shape(x)
     shape_y = tf.shape(y)
     with tf.control_dependencies(
-      [tf.assert_equal(
+      [TFCompat.v1.assert_equal(
          shape_x[x_axis], shape_y[y_axis],
          data=["x.shape[%i] != y.shape[%i]" % (x_axis, y_axis), shape_x, shape_y] + list(extra_msg))]):
       return tf.identity(x, "identity_with_dim_equal_check")
@@ -3201,6 +3218,7 @@ def check_shape_equal(x, y):
   :return: x with check added that shape(x) == shape(y)
   :rtype: tf.Tensor
   """
+  import TFCompat
   x_dyn_shape = x.get_shape()
   y_dyn_shape = y.get_shape()
   if x_dyn_shape.ndims is not None and y_dyn_shape.ndims is not None:
@@ -3216,7 +3234,7 @@ def check_shape_equal(x, y):
   # We need to fall-back to runtime check.
   with tf.name_scope("check_shape_equal"):
     with tf.control_dependencies(
-      [tf.assert_equal(
+      [TFCompat.v1.assert_equal(
         tf.shape(x), tf.shape(y),
         data=["x.shape not y.shape",
               tf.shape(x), tf.shape(y)])]):
@@ -3327,6 +3345,7 @@ def setup_tf_thread_pools(num_threads=None, log_file=None, tf_session_opts=None)
   :param stream|None log_file:
   :param dict[str] tf_session_opts:
   """
+  import TFCompat
   global _setup_tf_thread_pools_called_once
   if _setup_tf_thread_pools_called_once:
     return
@@ -3349,7 +3368,7 @@ def setup_tf_thread_pools(num_threads=None, log_file=None, tf_session_opts=None)
   if log_file:
     print("Setup TF inter and intra global thread pools, num_threads %r, session opts %r." % (num_threads, opts),
           file=log_file)
-  with tf.Session(config=tf.ConfigProto(**opts)) as session:
+  with TFCompat.v1.Session(config=TFCompat.v1.ConfigProto(**opts)) as session:
     session.close()
 
 
@@ -3382,8 +3401,10 @@ class _DeviceAttributes:
 
   def set_physical_device_desc(self, session):
     """
-    :param tf.Session session:
+    :param TFCompat.v1.Session session:
     """
+    if "XLA_" in self.name:
+      return  # XLA not supported currently by get_device_attr...
     physical_device_desc = session.run(get_device_attr(self.name))
     self.physical_device_desc = physical_device_desc.decode("utf8")
 
@@ -3407,27 +3428,35 @@ def get_tf_list_local_devices(tf_session_opts=None):
   so you should call :func:`setup_tf_thread_pools` first.
   Note that this will list all available devices.
   Any TF session might only use a subset of these.
-  You can get the list available in a given TF session by :func:`tf.Session.list_devices`.
+  You can get the list available in a given TF session by :func:`TFCompat.v1.Session.list_devices`.
 
-  :param dict[str]|None tf_session_opts: if given, will init a temp tf.Session with these opts
+  :param dict[str]|None tf_session_opts: if given, will init a temp TFCompat.v1.Session with these opts
   :rtype: list[tensorflow.core.framework.device_attributes_pb2.DeviceAttributes|_DeviceAttributes]
   """
+  import TFCompat
   check_initial_tf_thread_pool_init(tf_session_opts=tf_session_opts)
   global _list_local_devices
   if _list_local_devices is not None:
     return _list_local_devices
   print("Collecting TensorFlow device list...")
-  if tf_session_opts and tf_session_opts.get("gpu_options", {}).get("visible_device_list", None):
+  if tf_session_opts and tf_session_opts.get("gpu_options", {}):
+    # On any gpu_options, e.g. gpu_options.per_process_gpu_memory_fraction:
+    # The first usage of a device will use the provided options.
+    # list_local_devices() will init the devices to get information, but it will just use the default GPU options.
+    # To avoid that, we must do the custom session creation here.
+    # The earlier session creation via setup_tf_thread_pools() is not enough,
+    # because that uses device_count={"GPU":0}, which will not init the GPU.
+    # On gpu_options.visible_device_list:
     # Note that setting CUDA_VISIBLE_DEVICES to the corresponding subset will not work because
     # CUDA will internally cache the devices, thus the first call to list_local_devices will init
     # all visible devices at that point, and TF/CUDA will get confused later
     # when another set of devices is visible.
-    # However, getting the list via tf.Session.list_devices() will not provide us with a full DeviceAttributes
+    # However, getting the list via TFCompat.v1.Session.list_devices() will not provide us with a full DeviceAttributes
     # with all needed information, as dev.physical_device_desc is missing,
     # and we need that for e.g. get_available_gpu_min_compute_capability.
     # See also: https://github.com/tensorflow/tensorflow/issues/9374
     # However, we have get_device_attr, which provides gives us physical_device_desc.
-    with tf.Session(config=tf.ConfigProto(**tf_session_opts)) as session:
+    with TFCompat.v1.Session(config=TFCompat.v1.ConfigProto(**tf_session_opts)) as session:
       devs = list(session.list_devices())
       _list_local_devices = [_DeviceAttributes(dev=dev) for dev in devs]
       # Set physical_device_desc after we assigned _list_local_devices,
@@ -3463,7 +3492,7 @@ def print_available_devices(tf_session_opts=None, file=None):
   Note that a call to this will trigger the internal TF thread pool inits,
   so you should call :func:`setup_tf_thread_pools` first.
 
-  :param dict[str]|None tf_session_opts: if given, will init a temp tf.Session with these opts
+  :param dict[str]|None tf_session_opts: if given, will init a temp Session with these opts
   :param io.FileIO file:
   """
   if file is None:
@@ -3746,6 +3775,7 @@ class VarianceScalingNonZero(init_ops.VarianceScaling):
     :param partition_info:
     :rtype: tf.Tensor
     """
+    import TFCompat
     import numpy
     from tensorflow.python.ops import init_ops
     if dtype is None:
@@ -3766,11 +3796,11 @@ class VarianceScalingNonZero(init_ops.VarianceScaling):
     if self.distribution == "normal":
       stddev = numpy.sqrt(scale)
       limit = stddev * 2
-      x = tf.truncated_normal(shape, mean=0.0, stddev=stddev, dtype=dtype, seed=self.seed)
+      x = TFCompat.v1.truncated_normal(shape, mean=0.0, stddev=stddev, dtype=dtype, seed=self.seed)
     else:
       assert self.distribution == "uniform"
       limit = numpy.sqrt(3.0 * scale)
-      x = tf.random_uniform(shape, minval=-limit, maxval=limit, dtype=dtype, seed=self.seed)
+      x = TFCompat.v1.random_uniform(shape, minval=-limit, maxval=limit, dtype=dtype, seed=self.seed)
     x = wrap_distribution_non_zero(x, zero_limit=self.non_zero_fraction * limit, limit=limit)
     return x
 
@@ -3805,7 +3835,8 @@ def load_txt_file_initializer(filename, dtype=tf.float32):
     """
     # noinspection PyShadowingNames
     def __call__(self, shape, dtype=None, partition_info=None):
-      v = tf.py_func(py_loader, [], dtype_)
+      import TFCompat
+      v = TFCompat.v1.py_func(py_loader, [], dtype_)
       v.set_shape(shape)
       return v
 
@@ -3814,7 +3845,7 @@ def load_txt_file_initializer(filename, dtype=tf.float32):
 
 def get_initializer(s, seed=None, eval_local_ns=None, dtype=tf.float32):
   """
-  :param str|dict[str]|float s: e.g. "glorot_uniform" or "truncated_normal" or "orthogonal",
+  :param str|dict[str]|float|numpy.ndarray s: e.g. "glorot_uniform" or "truncated_normal" or "orthogonal",
     or config dict with "class",
     or string to be `eval`ed if it contains "(". constant if a float is given.
   :param int|tf.Tensor seed:
@@ -3823,19 +3854,22 @@ def get_initializer(s, seed=None, eval_local_ns=None, dtype=tf.float32):
   :return: (function (shape) -> tf.Tensor) | tf.Initializer
   :rtype: ((tuple[int]) -> tf.Tensor) | tf.Initializer
   """
+  import TFCompat
   dtype = tf.as_dtype(dtype).base_dtype
   assert isinstance(dtype, tf.DType)
+  import numpy
   if isinstance(s, (float, int)):
     if s == 0:
-      return tf.zeros_initializer(dtype=dtype)
+      return TFCompat.v1.zeros_initializer(dtype=dtype)
     if s == 1:
-      return tf.ones_initializer(dtype=dtype)
-    return tf.constant_initializer(s, dtype=dtype)
+      return TFCompat.v1.ones_initializer(dtype=dtype)
+    return TFCompat.v1.constant_initializer(s, dtype=dtype)
+  if isinstance(s, numpy.ndarray):
+    return TFCompat.v1.constant_initializer(s, dtype=dtype, verify_shape=True)
   if not s and dtype == tf.string:
-    return tf.zeros_initializer(dtype=dtype)
+    return TFCompat.v1.zeros_initializer(dtype=dtype)
   if not s and dtype.is_integer:
-    return tf.zeros_initializer(dtype=dtype)
-  import numpy
+    return TFCompat.v1.zeros_initializer(dtype=dtype)
   import math
   from tensorflow.python.ops import init_ops
 
@@ -3851,7 +3885,7 @@ def get_initializer(s, seed=None, eval_local_ns=None, dtype=tf.float32):
         print("  %s" % key)
 
   ns = dict(globals())
-  ns.update(vars(tf))
+  ns.update(vars(TFCompat.v1))
   ns.update(vars(init_ops))
   ns.update(vars(math))
   ns["numpy"] = numpy
@@ -3879,10 +3913,10 @@ def get_initializer(s, seed=None, eval_local_ns=None, dtype=tf.float32):
       raise ValueError("invalid get_initializer argument, expected string or dict, got: %r" % s)
     if isinstance(f, (float, int)):
       if f == 0:
-        return tf.zeros_initializer(dtype=dtype)
+        return TFCompat.v1.zeros_initializer(dtype=dtype)
       if f == 1:
-        return tf.ones_initializer(dtype=dtype)
-      return tf.constant_initializer(f, dtype=dtype)
+        return TFCompat.v1.ones_initializer(dtype=dtype)
+      return TFCompat.v1.constant_initializer(f, dtype=dtype)
     if not f:
       raise Exception("invalid initializer: %r" % s)
     if seed is not None:
@@ -3908,11 +3942,12 @@ def dropout(x, keep_prob, noise_shape=None, seed=None, name=None, cond_on_train=
   :param bool cond_on_train: automatically wrap through :func:`cond_on_train_flag`
   :param bool apply_correction_factor:
   """
+  import TFCompat
   if cond_on_train:
     return cond_on_train_flag(
       lambda: dropout(x, keep_prob=keep_prob, noise_shape=noise_shape, seed=seed, name=name),
       lambda: x)
-  with tf.name_scope(name, "dropout", [x]):
+  with tf.name_scope(name or "dropout"):
     x = tf.convert_to_tensor(x, name="x")
     assert isinstance(x, tf.Tensor)
     if isinstance(keep_prob, (float, int)) and not 0 < keep_prob <= 1:
@@ -3928,7 +3963,7 @@ def dropout(x, keep_prob, noise_shape=None, seed=None, name=None, cond_on_train=
       noise_shape = [d if isinstance(d, int) else tf.shape(x)[i] for (i, d) in enumerate(noise_shape)]
     # uniform [keep_prob, 1.0 + keep_prob)
     random_tensor = keep_prob
-    random_tensor += tf.random_uniform(noise_shape, seed=seed, dtype=x.dtype)
+    random_tensor += TFCompat.v1.random_uniform(noise_shape, seed=seed, dtype=x.dtype)
     # 0. if [keep_prob, 1.0) and 1. if [1.0, 1.0 + keep_prob)
     binary_tensor = tf.floor(random_tensor)
     if apply_correction_factor:
@@ -3952,6 +3987,7 @@ def layer_norm(x, gain, bias, axis, epsilon=1e-6):
   :param float epsilon: OpenAI uses 1e-6, TF contrib uses 1e-12, pbhatia243 uses 1e-5.
   :rtype: tf.Tensor
   """
+  import TFCompat
   with tf.name_scope('layer_norm'):
     ndim = x.get_shape().ndims
     if axis < 0:
@@ -3962,8 +3998,8 @@ def layer_norm(x, gain, bias, axis, epsilon=1e-6):
       gain = tf.reshape(gain, [dim if i == axis else 1 for i in range(ndim)], "gain_bc")
     if bias.get_shape().ndims == 1:
       bias = tf.reshape(bias, [dim if i == axis else 1 for i in range(ndim)], "bias_bc")
-    m, v = tf.nn.moments(x, axes=[axis], keep_dims=True)
-    inv = tf.rsqrt(v + epsilon)
+    m, v = TFCompat.v1.nn.moments(x, axes=[axis], keep_dims=True)
+    inv = TFCompat.v1.rsqrt(v + epsilon)
     inv *= gain
     return x * inv - m * inv + bias
 
@@ -4456,8 +4492,9 @@ def batched_uniq(x, seq_lens):
     max_new_time = max(new_seq_lens), seq_lens is of shape (batch,).
   :rtype: (tf.Tensor, tf.Tensor)
   """
+  import TFCompat
   y, new_seq_lens = sparse_labels_with_seq_lens(x, seq_lens=seq_lens, collapse_repeated=True)
-  z = tf.sparse_to_dense(sparse_indices=y.indices, sparse_values=y.values, output_shape=y.dense_shape)
+  z = TFCompat.v1.sparse_to_dense(sparse_indices=y.indices, sparse_values=y.values, output_shape=y.dense_shape)
   return z, new_seq_lens
 
 
@@ -4605,7 +4642,8 @@ def matrix_triangular(shape, dtype=tf.float32, lower=False, upper=False):
   """
   assert (lower or upper) and (not lower or not upper)
   x = tf.ones(shape, dtype=dtype)
-  return tf.matrix_band_part(x, num_lower=-1 if lower else 0, num_upper=-1 if upper else 0)
+  import TFCompat
+  return TFCompat.v1.matrix_band_part(x, num_lower=-1 if lower else 0, num_upper=-1 if upper else 0)
 
 
 class VariableAssigner(object):
@@ -4626,29 +4664,67 @@ class VariableAssigner(object):
   def assign(self, value, session):
     """
     :param numpy.ndarray|int|float|list[str] value:
-    :param tf.Session session:
+    :param TFCompat.v1.Session session:
     """
     session.run(self.assign_op, feed_dict={self.assign_op.inputs[1]: value})
 
 
 def _get_tf_gcc_path(bin_name):
   """
-  :param str bin_name:
+  :param str bin_name: e.g. "gcc" or "g++"
   :rtype: str
   """
   gcc_candidates = []
   tf_gcc_version = getattr(tf, "__compiler_version__", None)
-  if tf_gcc_version:  # e.g. "4.8.5"
-    tf_gcc_version = tf_gcc_version.split(".")
+  if tf_gcc_version:  # e.g. "4.8.5" or "5.4.0 20160609"
+    if " " in tf_gcc_version:
+      tf_gcc_version = tf_gcc_version[:tf_gcc_version.find(" ")]  # just "5.4.0"
+    tf_gcc_version = tf_gcc_version.split(".")  # ["5", "4", "0"]
     for i in range(len(tf_gcc_version), 0, -1):
       gcc_candidates.append("%s-%s" % (bin_name, ".".join(tf_gcc_version[:i])))
-  gcc_candidates.append(bin_name)
 
-  for gcc in gcc_candidates:
+    for gcc in gcc_candidates:
+      for p in os.environ["PATH"].split(":"):
+        pp = "%s/%s" % (p, gcc)
+        if os.path.exists(pp):
+          return pp
+    # No match found (even not same major version).
+
+    # Find all versions.
+    # Maybe we can use some other version instead.
+    # E.g. if we like to have GCC 5 (TF compiler version), but we have GCC 7, 8, 9 installed,
+    # instead of picking the default GCC (version 9), picking version 7 might make more sense.
+    # (Some nvcc versions also only support earlier GCC versions...)
+    available_binaries = {}  # major-version -> path
     for p in os.environ["PATH"].split(":"):
-      pp = "%s/%s" % (p, gcc)
-      if os.path.exists(pp):
-        return pp
+      if os.path.isdir(p):
+        for name in os.listdir(p):
+          if name.startswith("%s-" % bin_name):
+            version_str = name[len(bin_name) + 1:]
+            version_parts = version_str.split(".")
+            try:
+              major_version = int(version_parts[0])
+            except ValueError:
+              pass  # just ignore
+            else:
+              pp = "%s/%s" % (p, name)
+              available_binaries.setdefault(major_version, pp)
+              # Prefer shorter. Just some heuristic...
+              available_binaries[major_version] = min(available_binaries[major_version], pp)
+    if available_binaries:
+      tf_gcc_major_version = int(tf_gcc_version[0])  # e.g. 5
+      assert tf_gcc_major_version not in available_binaries  # we should have found it before
+      # Get closest version. This is just some heuristic...
+      # (Instead of such an heuristic, we might additionally add a mapping of known supported versions...)
+      version = min([(abs(v - tf_gcc_major_version), v) for v in sorted(available_binaries.keys())])[1]
+      return available_binaries[version]
+
+  # Just check for binary (without version) in PATH.
+  for p in os.environ["PATH"].split(":"):
+    pp = "%s/%s" % (p, bin_name)
+    if os.path.exists(pp):
+      return pp
+  # Not found.
 
   # Dummy fallback.
   return bin_name
@@ -4908,8 +4984,7 @@ class OpCodeCompiler(NativeCodeCompiler):
       ld_flags += tf.sysconfig.get_link_flags()
     elif have_min_tf_version((1, 4)):
       ld_flags += ["-L%s" % tf.sysconfig.get_lib(), "-ltensorflow_framework"]
-    # noinspection PyUnresolvedReferences
-    use_cxx11_abi = hasattr(tf, 'CXX11_ABI_FLAG') and tf.CXX11_ABI_FLAG
+    use_cxx11_abi = getattr(getattr(tf, "sysconfig", tf), "CXX11_ABI_FLAG", getattr(tf, "CXX11_ABI_FLAG", False))
     super(OpCodeCompiler, self).__init__(
       include_paths=include_paths, c_macro_defines=c_macro_defines, ld_flags=ld_flags, use_cxx11_abi=use_cxx11_abi,
       **kwargs)
@@ -4982,8 +5057,7 @@ class TFNativeUtilCompiler(NativeCodeCompiler):
       ld_flags += tf.sysconfig.get_link_flags()
     elif have_min_tf_version((1, 4)):
       ld_flags += ["-L%s" % tf.sysconfig.get_lib(), "-ltensorflow_framework"]
-    # noinspection PyUnresolvedReferences
-    use_cxx11_abi = hasattr(tf, 'CXX11_ABI_FLAG') and tf.CXX11_ABI_FLAG
+    use_cxx11_abi = getattr(getattr(tf, "sysconfig", tf), "CXX11_ABI_FLAG", getattr(tf, "CXX11_ABI_FLAG", False))
     super(TFNativeUtilCompiler, self).__init__(
       include_paths=include_paths, c_macro_defines=c_macro_defines, ld_flags=ld_flags, use_cxx11_abi=use_cxx11_abi,
       **kwargs)
@@ -5024,6 +5098,7 @@ def add_scaled_noise_to_gradients(grads_and_vars, gradient_noise_scale, sparse_g
   :return: adapted grads_and_vars
   :rtype: list[(tf.Tensor|tf.IndexedSlices, tf.Variable)]
   """
+  import TFCompat
   gradients, variables = zip(*grads_and_vars)
   noisy_gradients = []
   for gradient in gradients:
@@ -5045,7 +5120,7 @@ def add_scaled_noise_to_gradients(grads_and_vars, gradient_noise_scale, sparse_g
         gradient_shape = gradient_values.get_shape()
       if isinstance(gradient_shape, tf.TensorShape) and not gradient_shape.is_fully_defined():
         gradient_shape = tf.shape(gradient_values)
-      noise = tf.truncated_normal(
+      noise = TFCompat.v1.truncated_normal(
         gradient_shape, stddev=gradient_noise_scale, name="%s_grad_noise" % name, seed=get_random_seed())
       gradient_values = tf.add(gradient_values, noise, name="%s_add_grad_noise" % name)
       if sparse_grads and isinstance(gradient, tf.IndexedSlices):
@@ -5081,7 +5156,8 @@ class CustomGradient(object):
     :return: op
     :rtype: ((tf.Tensor) -> tf.Tensor)|T
     """
-    graph = tf.get_default_graph()
+    import TFCompat
+    graph = TFCompat.v1.get_default_graph()
     assert isinstance(graph, tf.Graph)
     if graph is not self.registered_ops_graph():
       self.registered_ops.clear()
@@ -5097,7 +5173,7 @@ class CustomGradient(object):
     # In case this is done too late, which is if there was already a previous session.run call,
     # you might get an exception like this:
     # NotFoundError: Op type not registered 'generic_loss_and_error_signal'
-    call = op_with_new_grad(*[tf.placeholder(dtype) for dtype in input_types])
+    call = op_with_new_grad(*[TFCompat.v1.placeholder(dtype) for dtype in input_types])
     assert isinstance(call, tf.Tensor)
     assert call.graph is graph
     self.registered_ops[cache_key] = op_with_new_grad
@@ -5274,11 +5350,12 @@ class MetaLosses(object):
     :return: grad for x
     :rtype: (tf.Tensor,)
     """
+    import TFCompat
     x, synthetic_grad_x = op.inputs
     if cls.scope_ctx.scope:
       with tf.name_scope("grad_prediction_loss"):
         grad_prediction_loss = tf.reduce_mean(tf.square(synthetic_grad_x - tf.stop_gradient(grad_out)))
-        tf.summary.scalar("loss", grad_prediction_loss)
+        TFCompat.v1.summary.scalar("loss", grad_prediction_loss)
       # noinspection PyProtectedMember
       loss_info = op._RETURNN_loss_info
       cls.scope_ctx.scope.register_loss(MetaLosses.LossInfo(value=grad_prediction_loss, **loss_info))
@@ -5318,10 +5395,11 @@ class MetaLosses(object):
     :return: grad for x
     :rtype: (tf.Tensor,)
     """
+    import TFCompat
     if cls.scope_ctx.scope:
       with tf.name_scope("tikhonov_regularization_loss"):
         loss = tf.nn.l2_loss(grad_out)
-        tf.summary.scalar("loss", loss)
+        TFCompat.v1.summary.scalar("loss", loss)
       # noinspection PyProtectedMember
       loss_info = op._RETURNN_loss_info
       cls.scope_ctx.scope.register_loss(MetaLosses.LossInfo(value=loss, **loss_info))
@@ -5370,7 +5448,7 @@ def filter_grad(x, threshold, axis):
       assert isinstance(op, tf.Operation)
       assert isinstance(out_grad, tf.Tensor)
       out_grad.set_shape(op.inputs[0].get_shape())
-      keep_filter = tf.less(tf.reduce_max(out_grad ** 2, axis=axis, keep_dims=True), threshold)
+      keep_filter = tf.less(tf.reduce_max(out_grad ** 2, axis=axis, keepdims=True), threshold)
       # keep_filter must be the same shape as out_grad.
       keep_filter = tf.logical_and(keep_filter, tf.ones_like(out_grad, dtype=tf.bool))
       out_grad = tf.where(keep_filter, out_grad, tf.zeros_like(out_grad))
@@ -5418,17 +5496,24 @@ def _tensorarray_repr(x):
   :param tf.TensorArray x:
   :rtype: str
   """
-  op = x.handle.op
-  assert isinstance(op, tf.Operation)
-  return "<tf.TensorArray %r>" % op.name
+  if x.handle is not None:
+    op = x.handle.op
+    assert isinstance(op, tf.Operation)
+    return "<tf.TensorArray %r>" % op.name
+  if x.flow is not None:
+    op = x.flow.op
+    assert isinstance(op, tf.Operation)
+    return "<tf.TensorArray %r>" % op.name
+  # noinspection PyProtectedMember
+  return "<tf.TensorArray %r>" % x._implementation
 
 
 def _variablescope_repr(x):
   """
-  :param tf.VariableScope x:
+  :param TFCompat.v1.VariableScope x:
   :rtype: str
   """
-  return "<tf.VariableScope %r>" % x.name
+  return "<tf.compat.v1.VariableScope %r>" % x.name
 
 
 def _saveable_repr(x):
@@ -5453,6 +5538,7 @@ def debug_register_better_repr():
   For debugging, it can be helpful to give some more info.
   This monkey-patches clazz.__repr__ of some TF classes.
   """
+  import TFCompat
   from tensorflow.python.training import saver
 
   for cl, f in [
@@ -5460,7 +5546,7 @@ def debug_register_better_repr():
         (tf.Operation, _op_repr),
         (tf.Variable, _var_repr),
         (tf.TensorArray, _tensorarray_repr),
-        (tf.VariableScope, _variablescope_repr),
+        (TFCompat.v1.VariableScope, _variablescope_repr),
         (saver.BaseSaverBuilder.SaveableObject, _saveable_repr),
         (saver.BaseSaverBuilder.SaveSpec, _savespec_repr)]:
     setattr(cl, "__repr__", f)
@@ -5626,14 +5712,15 @@ def nan_to_num(x, nan_num=0, inf_num=1e30):
   :param float|tf.Tensor inf_num:
   :return: x with replaced nan and inf
   """
+  import TFCompat
   if isinstance(x, tf.IndexedSlices):
     return tf.IndexedSlices(values=nan_to_num(x.values), indices=x.indices, dense_shape=x.dense_shape)
   with tf.name_scope("nan_to_num"):
     nan_num = tf.convert_to_tensor(nan_num, dtype=x.dtype)
     inf_num = tf.convert_to_tensor(inf_num, dtype=x.dtype)
-    x = where_bc(tf.is_nan(x), nan_num, x)
-    x = where_bc(tf.logical_and(tf.is_inf(x), tf.greater(x, 0)), inf_num, x)
-    x = where_bc(tf.logical_and(tf.is_inf(x), tf.less(x, 0)), -inf_num, x)
+    x = where_bc(TFCompat.v1.is_nan(x), nan_num, x)
+    x = where_bc(tf.logical_and(TFCompat.v1.is_inf(x), tf.greater(x, 0)), inf_num, x)
+    x = where_bc(tf.logical_and(TFCompat.v1.is_inf(x), tf.less(x, 0)), -inf_num, x)
     return x
 
 
@@ -5653,6 +5740,23 @@ def where_bc(condition, x, y, name="where_bc"):
   :return: basically tf.where(condition, x, y)
   :rtype: tf.Tensor
   """
+  import TFCompat
+  if TFCompat.v2:
+    # where_v2 supports broadcasting. But we might still need to extend dims.
+    # Note that the extend dims is on the opposite side as it would be common (in all other broadcasting ops).
+    # However, this matches the old tf.compat.v1.where behavior.
+    # (Actually the doc of this where_bc says we do not allow this anyway...? We should check where this is used...)
+    condition = tf.convert_to_tensor(condition)
+    x = tf.convert_to_tensor(x)
+    y = tf.convert_to_tensor(y)
+    ndims = max(condition.get_shape().ndims, x.get_shape().ndims, y.get_shape().ndims)
+    if x.get_shape().ndims < ndims:
+      x = expand_multiple_dims(x, [-1] * (ndims - x.get_shape().ndims))
+    if y.get_shape().ndims < ndims:
+      y = expand_multiple_dims(y, [-1] * (ndims - y.get_shape().ndims))
+    if condition.get_shape().ndims < ndims:
+      condition = expand_multiple_dims(condition, [-1] * (ndims - condition.get_shape().ndims))
+    return TFCompat.v2.where(condition=condition, x=x, y=y, name=name)
   with tf.name_scope(name):
     common_shape = get_common_shape([condition, x, y])
     condition = unbroadcast_to_common_shape(condition, common_shape=common_shape)
@@ -5734,11 +5838,19 @@ def stop_event_writer_thread(event_writer):
   that the event writer thread is never stopped.
   This will try to stop it. Only do it if you don't use the event writer anymore.
 
-  :param tf.summary.FileWriter|tensorflow.python.summary.writer.event_file_writer.EventFileWriter|tensorflow.python.summary.writer.event_file_writer._EventLoggerThread event_writer:  # nopep8
+  :param TFCompat.v1.summary.FileWriter|tensorflow.python.summary.writer.event_file_writer.EventFileWriter|tensorflow.python.summary.writer.event_file_writer._EventLoggerThread event_writer:  # nopep8
   """
+  import TFCompat
+  try:
+    from tensorflow.python.summary.writer.event_file_writer import CloseableQueue
+  except ImportError:
+    pass  # earlier TF versions. go on with code below
+  else:
+    # If TF has the CloseableQueue, this should have been fixed on the TF side already.
+    return
   # noinspection PyProtectedMember
   from tensorflow.python.summary.writer.event_file_writer import EventFileWriter, _EventLoggerThread
-  if isinstance(event_writer, tf.summary.FileWriter):
+  if isinstance(event_writer, TFCompat.v1.summary.FileWriter):
     event_writer = event_writer.event_writer
   if isinstance(event_writer, _EventLoggerThread):
     worker = event_writer
@@ -5845,6 +5957,7 @@ def windowed_nd(source, window_size, window_left=None, window_right=None,
   :return: tensor of shape (..., n_time, ..., window, ...)
   :rtype: tf.Tensor
   """
+  import TFCompat
   with tf.name_scope("windowed_batch"):
     if time_axis != 0:
       source = move_axis(source, time_axis, 0)  # (n_time,...)
@@ -5863,7 +5976,7 @@ def windowed_nd(source, window_size, window_left=None, window_right=None,
         if isinstance(window_size, int) and isinstance(window_left, int) and isinstance(window_right, int):
           assert window_size == window_left + window_right + 1
         else:
-          with tf.control_dependencies([tf.assert_equal(
+          with tf.control_dependencies([TFCompat.v1.assert_equal(
                 window_size, window_left + window_right + 1,
                 data=["window != w_left + w_right + 1.", window_size, " ", window_left, " ", window_right])]):
             window_size = tf.identity(window_size)
@@ -5926,10 +6039,11 @@ def slice_nd(x, start, size):
     window_pos = tf.reshape(window_pos, (-1,))  # (n_batch*size,)
 
     # build mask for zero-padding
-    mask = tf.logical_or(window_pos > shape[1]-1, window_pos < 0)  # (n_batch*size,) tf.bool
+    mask = tf.logical_or(
+      tf.greater(window_pos, shape[1] - 1), tf.less(window_pos, 0))  # (n_batch*size,) tf.bool
 
     # clip indices so that gather_nd doesn't fail, will zero-pad later
-    clip_time_idx = tf.clip_by_value(window_pos, 0, shape[1]-1)
+    clip_time_idx = tf.clip_by_value(window_pos, 0, shape[1] - 1)
     indices = tf.stack([batch_idxs, clip_time_idx])  # (n_batch*size, 2)
     indices = tf.transpose(indices)  # (2, n_batch*size)
 
@@ -5939,7 +6053,8 @@ def slice_nd(x, start, size):
     new_shape = [shape[0], size] + shape[2:]
 
     # zero-pad
-    slices = tf.where(mask, tf.zeros_like(slices), slices)
+    mask_bc = expand_multiple_dims(mask, [-1] * (slices.get_shape().ndims - 1))
+    slices = where_bc(mask_bc, tf.zeros_like(slices), slices)
 
     slices = tf.reshape(slices, new_shape)  # (B, size, ...)
     return slices
@@ -5957,7 +6072,8 @@ def global_tensor(f, name):
   :return: the tensor
   :rtype: tf.Tensor
   """
-  graph = tf.get_default_graph()
+  import TFCompat
+  graph = TFCompat.v1.get_default_graph()
   assert isinstance(graph, tf.Graph)
   abs_graph_name = "globals/%s:0" % name
   try:
@@ -5983,8 +6099,9 @@ def get_global_train_flag_placeholder():
   :return: bool scalar tensor
   :rtype: tf.Tensor
   """
+  import TFCompat
   return global_tensor(
-    lambda: tf.placeholder(tf.bool, shape=(), name="train_flag"),
+    lambda: TFCompat.v1.placeholder(tf.bool, shape=(), name="train_flag"),
     name="train_flag")
 
 
@@ -6019,34 +6136,36 @@ def get_random_seed():
   """
   :rtype: int|None
   """
+  import TFCompat
   from TFNetwork import TFNetwork
   network = TFNetwork.get_current_network(must_exist=False)
   if network:
     return network.random.randint(2 ** 31)
-  return tf.get_seed(None)[1]
+  return TFCompat.v1.get_seed(None)[1]
 
 
 def encode_raw(x, axis=-1, seq_lens=None):
   """
-  The inverse function of tf.decode_raw().
+  The inverse function of tf.compat.v1.decode_raw().
   Also see: https://stackoverflow.com/questions/43403147/how-to-create-a-encode-raw-tensorflow-function
 
   :param tf.Tensor x: of integer types [0,255], will get casted to uint8
   :param int axis: the axis to reduce-join the string. decode_raw has added it at the end
   :param tf.Tensor|None seq_lens: must have same shape as x after reduce-joining.
-    Note that using seq_lens will make our output not compatible with tf.decode_raw() anymore
-    because tf.decode_raw() requires all strings to be of the same length.
+    Note that using seq_lens will make our output not compatible with TFCompat.v1.decode_raw() anymore
+    because tf.compat.v1.decode_raw() requires all strings to be of the same length.
   :return: string tensor
   :rtype: tf.Tensor
   """
+  import TFCompat
   with tf.name_scope("encode_raw"):
     character_lookup = global_tensor(
       lambda: tf.constant([chr(i) for i in range(256)]), name="character_lookup")
     raw_bytes = tf.bitcast(x, tf.uint8, name="raw_bytes")
     chars = tf.gather(character_lookup, indices=tf.cast(raw_bytes, tf.int32), name="chars")
-    strings = tf.reduce_join(chars, axis=axis, name="strings")
+    strings = TFCompat.v1.reduce_join(chars, axis=axis, name="strings")
     if seq_lens is not None:
-      strings = tf.substr(strings, pos=tf.zeros_like(seq_lens), len=seq_lens)
+      strings = TFCompat.v1.substr(strings, pos=tf.zeros_like(seq_lens), len=seq_lens)
     return strings
 
 
@@ -6099,12 +6218,13 @@ def remove_labels(x, labels):
   :return: x where all provided labels are removed, and the indices are changed accordingly
   :rtype: tf.SparseTensor
   """
+  import TFCompat
   if not labels:
     return x
   x.indices.set_shape((tf.TensorShape((None, 2))))
   x.values.set_shape((tf.TensorShape((None,))))
   x.dense_shape.set_shape(tf.TensorShape((2,)))
-  x_ = tf.sparse_to_dense(sparse_indices=x.indices, sparse_values=x.values, output_shape=x.dense_shape)
+  x_ = TFCompat.v1.sparse_to_dense(sparse_indices=x.indices, sparse_values=x.values, output_shape=x.dense_shape)
   seq_lens = get_sparse_tensor_length(x)
   z, _ = sparse_labels_with_seq_lens(x_, seq_lens=seq_lens, post_filter_idx=labels)
   return z
@@ -6207,16 +6327,18 @@ def init_variable_if_needed(v):
   :param tf.Variable v:
   :rtype: tf.Operation
   """
+  import TFCompat
+
   def make_init():
     """
     :rtype: tf.Operation
     """
-    # Cannot use tf.variables_initializer(), see here: https://stackoverflow.com/questions/44354964/
-    with tf.control_dependencies([tf.assign(v, v.initial_value)]):
+    # Cannot use tf.compat.v1.variables_initializer(), see here: https://stackoverflow.com/questions/44354964/
+    with tf.control_dependencies([TFCompat.v1.assign(v, v.initial_value)]):
       return tf.no_op()
 
   maybe_init = tf.cond(
-    tf.is_variable_initialized(v),
+    TFCompat.v1.is_variable_initialized(v),
     lambda: tf.no_op(),
     make_init,
     name="maybe_init")
@@ -6240,14 +6362,15 @@ def true_once():
     Internally, this creates a non-trainable variable as a helper.
   :rtype: tf.Tensor
   """
-  with tf.variable_scope("true_once"):
+  import TFCompat
+  with TFCompat.v1.variable_scope("true_once"):
     v = tf.Variable(initial_value=True, trainable=False, name="true_once_var")
     with tf.control_dependencies([init_variable_if_needed(v)]):
       # Cannot use tf.identity because that would give us a reference to the var but we want to copy it now.
       x = tf.where(v.read_value(), True, False)
       with tf.control_dependencies([x]):
         x = tf.identity(x)
-        reset = tf.assign(v, False)
+        reset = TFCompat.v1.assign(v, False)
         with tf.control_dependencies([x, reset]):
           x = tf.identity(x)
   return x
@@ -6280,16 +6403,43 @@ def enforce_copy(x):
     return tf.add(x, zero)
 
 
+def copy_unknown_shape(x):
+  """
+  :param tf.Tensor x:
+  :return: tensor, copy of x, which has an unknown shape by intention
+  :rtype: tf.Tensor
+  """
+  import TFCompat
+  x = tf.convert_to_tensor(x)
+
+  # Currently we use py_func, which is somewhat inefficient, and also CPU-only.
+  # But this is fine for our use cases.
+
+  # noinspection PyShadowingNames
+  def py_copy(x_np):
+    """
+    :param numpy.ndarray x_np:
+    :rtype: numpy.ndarray
+    """
+    return x_np
+
+  y, = TFCompat.v1.py_func(py_copy, [x], [x.dtype], name="py_copy")
+  assert isinstance(y, tf.Tensor)
+  assert y.shape.ndims is None
+  return y
+
+
 def view_as(x, dtype):
   """
   Does the numpy.view equivalent.
-  Note that the current implementation is inefficient (uses tf.py_func) and CPU-only.
+  Note that the current implementation is inefficient (uses TFCompat.v1.py_func) and CPU-only.
   Also see :func:`tf.bitcast`.
 
   :param tf.Tensor x:
   :param tf.DType dtype:
   :return: x.view(dtype) equivalent (see numpy.view)
   """
+  import TFCompat
   import numpy
 
   # noinspection PyShadowingNames
@@ -6301,7 +6451,7 @@ def view_as(x, dtype):
     assert isinstance(x, numpy.ndarray)
     return x.view(dtype.as_numpy_dtype)
 
-  y, = tf.py_func(
+  y, = TFCompat.v1.py_func(
     py_wrap_numpy_view,
     [x], [dtype],
     name="py_wrap_numpy_view")
@@ -6362,10 +6512,11 @@ def maximum_with_identity_grad(x, y):
   :return: tf.maximum(x, y) where each will receive the gradient
   :rtype: tf.Tensor
   """
+  import TFCompat
   with tf.name_scope("maximum_with_identity_grad"):
     # An alternative to gradient_override_map would be :class:`CustomGradient` which is more generic.
     grad_name = _register_alternative_minmax_grad()
-    g = tf.get_default_graph()
+    g = TFCompat.v1.get_default_graph()
     with g.gradient_override_map({"Maximum": grad_name}):
       return tf.maximum(x, y)
 
@@ -6377,10 +6528,11 @@ def minimum_with_identity_grad(x, y):
   :return: tf.minimum(x, y) where each will receive the gradient
   :rtype: tf.Tensor
   """
+  import TFCompat
   with tf.name_scope("minimum_with_identity_grad"):
     # An alternative to gradient_override_map would be :class:`CustomGradient` which is more generic.
     grad_name = _register_alternative_minmax_grad()
-    g = tf.get_default_graph()
+    g = TFCompat.v1.get_default_graph()
     with g.gradient_override_map({"Minimum": grad_name}):
       return tf.minimum(x, y)
 
@@ -6393,10 +6545,11 @@ def clip_by_value_with_identity_grad(x, clip_value_min, clip_value_max):
   :return: tf.clip_by_value(x, clip_value_min, clip_value_max) where each will receive the gradient
   :rtype: tf.Tensor
   """
+  import TFCompat
   with tf.name_scope("clip_by_value_with_identity_grad"):
     # An alternative to gradient_override_map would be :class:`CustomGradient` which is more generic.
     grad_name = _register_alternative_minmax_grad()
-    g = tf.get_default_graph()
+    g = TFCompat.v1.get_default_graph()
     with g.gradient_override_map({"Minimum": grad_name, "Maximum": grad_name}):
       x = tf.maximum(x, clip_value_min)
       x = tf.minimum(x, clip_value_max)
@@ -6413,6 +6566,7 @@ def safe_log(x, eps=1e-20, use_fake_grad=True):
   :return: log(max(x, eps))
   :rtype: tf.Tensor
   """
+  import TFCompat
   with tf.name_scope("safe_log"):
     y = check_base_op_type_and_replace(x, "Exp", "Identity")
     if y is not None:
@@ -6427,7 +6581,7 @@ def safe_log(x, eps=1e-20, use_fake_grad=True):
       x = maximum_with_identity_grad(x, eps)
     else:
       x = tf.maximum(x, eps)
-    return tf.log(x)
+    return TFCompat.v1.log(x)
 
 
 def safe_exp(x, eps=1e-20):
@@ -6465,6 +6619,7 @@ def l1_normalized(x, axis=-1, eps=1e-20, use_logsumexp=False, is_not_negative=Fa
   :return: y such that tf.reduce_sum(tf.abs(y)) == 1. i.e. y = x / tf.reduce_sum(tf.abs(x)).
   :rtype: tf.Tensor
   """
+  import TFCompat
   with tf.name_scope("l1_normalized"):
     if not is_not_negative:
       x = tf.abs(x)
@@ -6472,10 +6627,10 @@ def l1_normalized(x, axis=-1, eps=1e-20, use_logsumexp=False, is_not_negative=Fa
       # Do that here, not after reduce_sum, so that we get a proper gradient to each entry.
       x = maximum_with_identity_grad(x, eps)
     if use_logsumexp:
-      weighted_input_sum = tf.exp(tf.reduce_logsumexp(tf.log(x), axis=axis, keep_dims=True))
+      weighted_input_sum = tf.exp(tf.reduce_logsumexp(TFCompat.v1.log(x), axis=axis, keepdims=True))
     else:
-      weighted_input_sum = tf.reduce_sum(x, axis=axis, keep_dims=True)
-    divisor = tf.reciprocal(weighted_input_sum)
+      weighted_input_sum = tf.reduce_sum(x, axis=axis, keepdims=True)
+    divisor = TFCompat.v1.reciprocal(weighted_input_sum)
     return tf.multiply(x, divisor)
 
 
@@ -6527,7 +6682,7 @@ def check_base_op_type_and_replace(x, op_type, new_op_type):
     inner = check_base_op_type_and_replace(x.op.inputs[0], op_type=op_type, new_op_type=new_op_type)
     if inner is None:
       return None
-    op = copy_op(x.op, inputs=[inner] + x.op.inputs[1:])
+    op = copy_op(x.op, inputs=[inner] + list(x.op.inputs[1:]))
     return op.outputs[0]
   if x.op.type != op_type:
     return None
@@ -6545,6 +6700,7 @@ def copy_op(op, op_type=None, inputs=None):
   :return: copy of op but optionally change op.type == op_type or op.inputs == inputs
   :rtype: tf.Operation
   """
+  import TFCompat
   assert isinstance(op, tf.Operation)
   g = op.graph
   if op_type is None:
@@ -6555,7 +6711,7 @@ def copy_op(op, op_type=None, inputs=None):
   # Maybe in the future we would also wrap some deprecated/outdated ops.
   if op_type == "LogSigmoid":
     assert len(inputs) == 1
-    return tf.log_sigmoid(inputs[0]).op
+    return TFCompat.v1.log_sigmoid(inputs[0]).op
   # Fallback to the generic case.
   new_op = g.create_op(
     op_type=op_type,
@@ -6606,21 +6762,22 @@ def smoothing_cross_entropy(logits,
   :return: Tensor of the same shape as `labels` and of the same dtype as `logits`.
   :rtype: tf.Tensor
   """
-  with tf.name_scope("smoothing_cross_entropy", values=[logits, labels]):
+  import TFCompat
+  with tf.name_scope("smoothing_cross_entropy"):
     if vocab_size is None:
       vocab_size = get_shape_dim(logits, -1, name="vocab_size")
     confidence = 1.0 - label_smoothing
     # Low confidence is given to all non-true labels, uniformly.
-    low_confidence = (1.0 - confidence) / tf.to_float(vocab_size - 1)
+    low_confidence = (1.0 - confidence) / tf.cast(vocab_size - 1, tf.float32)
     # Normalizing constant is the best cross-entropy value with soft targets.
     # We subtract it just for readability, makes no difference on learning.
     normalizing = -(
-      confidence * tf.log(confidence) + tf.to_float(vocab_size - 1) *
-      low_confidence * tf.log(low_confidence + 1e-20))  # scalar
+      confidence * TFCompat.v1.log(confidence) + tf.cast(vocab_size - 1, tf.float32) *
+      low_confidence * TFCompat.v1.log(low_confidence + 1e-20))  # scalar
 
     if gaussian:
       labels = tf.cast(labels, tf.float32)
-      normal_dist = tf.distributions.Normal(loc=labels, scale=confidence)
+      normal_dist = TFCompat.v1.distributions.Normal(loc=labels, scale=confidence)
       # Locations to evaluate the probability distributions.
       soft_targets = normal_dist.prob(
         expand_multiple_dims(
@@ -6704,16 +6861,15 @@ def softmax_cross_entropy_over_size(logits, labels, stable_gradient=True):
   assert (any([dim is n_batch for dim in mask_expand_dims_shape]) and
           any([dim is enc_time_dim for dim in mask_expand_dims_shape]))
   mask = tf.reshape(mask, mask_expand_dims_shape)  # (...,B,...,enc-T), just like logits/labels
-  mask = tf.logical_and(mask, tf.ones_like(labels_t, dtype=tf.bool))  # unbroadcast, needed for tf.where
-  logits_t = tf.where(mask, logits_t, float("-inf") * tf.ones_like(logits_t))
+  logits_t = where_bc(mask, logits_t, float("-inf") * tf.ones_like(logits_t))
   # We only apply the mask to the logits. We expect that we already have it zeroed for labels.
   # Unfortunately we cannot use tf.nn.softmax_cross_entropy_with_logits because we would get inf loss.
-  log_probs_t = tf.nn.log_softmax(logits_t, dim=logits_enc_time_axis)
-  log_probs_t = tf.where(mask, log_probs_t, tf.zeros_like(logits_t))  # filter out the infs
+  log_probs_t = tf.nn.log_softmax(logits_t, axis=logits_enc_time_axis)
+  log_probs_t = where_bc(mask, log_probs_t, tf.zeros_like(logits_t))  # filter out the infs
   out = labels_t * log_probs_t
-  out = -tf.reduce_sum(out, axis=logits_enc_time_axis, keep_dims=True)
+  out = -tf.reduce_sum(out, axis=logits_enc_time_axis, keepdims=True)
   if stable_gradient:
-    probs_t = tf.nn.softmax(logits_t, dim=logits_enc_time_axis)
+    probs_t = tf.nn.softmax(logits_t, axis=logits_enc_time_axis)
     out = custom_gradient.generic_loss_and_error_signal(loss=out, x=logits_t, grad_x=probs_t - labels_t)
   out = tf.squeeze(out, axis=logits_enc_time_axis)
   return out
@@ -6733,6 +6889,7 @@ def interpolate_bilinear(grid, query_points, name='interpolate_bilinear', indexi
   :returns: a 3-D `Tensor` with shape `[batch, N, channels]`
   :rtype: tf.Tensor
   """
+  import TFCompat
   import numpy
   assert indexing in ('ij', 'xy')
 
@@ -6750,8 +6907,8 @@ def interpolate_bilinear(grid, query_points, name='interpolate_bilinear', indexi
     num_queries = tf.shape(query_points)[1]
 
     with tf.control_dependencies([
-        tf.assert_greater_equal(height, 2, message='Grid height must be at least 2.'),
-        tf.assert_greater_equal(width, 2, message='Grid width must be at least 2.')
+        TFCompat.v1.assert_greater_equal(height, 2, message='Grid height must be at least 2.'),
+        TFCompat.v1.assert_greater_equal(width, 2, message='Grid width must be at least 2.')
     ]):
       alphas = []
       floors = []
@@ -6789,8 +6946,9 @@ def interpolate_bilinear(grid, query_points, name='interpolate_bilinear', indexi
     assert len(alphas) == len(floors) == len(ceils) == len(index_order) == 2
 
     with tf.control_dependencies([
-        tf.assert_less_equal(
-          tf.to_float(batch_size) * tf.to_float(height) * tf.to_float(width), numpy.iinfo(numpy.int32).max / 8.,
+        TFCompat.v1.assert_less_equal(
+          tf.cast(batch_size, tf.float32) * tf.cast(height, tf.float32) * tf.cast(width, tf.float32),
+          numpy.iinfo(numpy.int32).max / 8.,
           message="""The image size or batch size is sufficiently large
                      that the linearized addresses used by array_ops.gather
                      may exceed the int32 limit.""")
@@ -6868,6 +7026,7 @@ def create_random_warp_flow_2d(shape, std=None, scale=10., blur_std=2.):
   :return: [batch, height, width, 2]
   :rtype: tf.Tensor
   """
+  import TFCompat
   if not isinstance(std, (tuple, list)):
     std = (std, std)
   if not isinstance(scale, (tuple, list)):
@@ -6880,12 +7039,12 @@ def create_random_warp_flow_2d(shape, std=None, scale=10., blur_std=2.):
     assert isinstance(shape, tf.Tensor)
     shape.set_shape((3,))  # b,h,w
   small_shape = [shape[0], shape[1] // int(scale[0]), shape[2] // int(scale[1])]
-  flow1 = tf.random_normal(shape=small_shape, stddev=std[0])
-  flow2 = tf.random_normal(shape=small_shape, stddev=std[1])
+  flow1 = TFCompat.v1.random_normal(shape=small_shape, stddev=std[0])
+  flow2 = TFCompat.v1.random_normal(shape=small_shape, stddev=std[1])
   flow = tf.stack([flow1, flow2], axis=-1)  # [batch, height, width, 2]
   flow.set_shape((None, None, None, 2))
   flow = gaussian_blur_2d(flow, kernel_std=blur_std)
-  flow = tf.image.resize_images(flow, size=[shape[1], shape[2]])
+  flow = TFCompat.v1.image.resize_images(flow, size=[shape[1], shape[2]])
   return flow
 
 
@@ -6896,6 +7055,7 @@ def gaussian_kernel_2d(size, std):
   :return: (size_x*2+1,size_y*2+1), float32
   :rtype: tf.Tensor
   """
+  import TFCompat
   if isinstance(size, (tuple, list)):
     size_x, size_y = size
   else:
@@ -6906,8 +7066,8 @@ def gaussian_kernel_2d(size, std):
     std_x, std_y = std, std
   values_x = tf.range(start=-size_x, limit=size_x + 1, dtype=tf.float32)
   values_y = tf.range(start=-size_y, limit=size_y + 1, dtype=tf.float32)
-  dx = tf.distributions.Normal(0.0, std_x)
-  dy = tf.distributions.Normal(0.0, std_y)
+  dx = TFCompat.v1.distributions.Normal(0.0, std_x)
+  dy = TFCompat.v1.distributions.Normal(0.0, std_y)
   values_x = dx.prob(values_x)
   values_y = dy.prob(values_y)
   values = tf.einsum('i,j->ij', values_x, values_y)
@@ -6973,6 +7133,7 @@ def bleu_score(hypothesis, truth, hyp_seq_lens, truth_seq_lens):
   :rtype: tf.Tensor
   :return: (batch,), float32
   """
+  import TFCompat
   hypothesis = tf.convert_to_tensor(hypothesis)
   truth = tf.convert_to_tensor(truth)
   hyp_seq_lens = tf.convert_to_tensor(hyp_seq_lens)
@@ -6981,7 +7142,7 @@ def bleu_score(hypothesis, truth, hyp_seq_lens, truth_seq_lens):
   truth.set_shape(tf.TensorShape((None, None)))
   hyp_seq_lens.set_shape(tf.TensorShape((None,)))
   truth_seq_lens.set_shape(tf.TensorShape((None,)))
-  res = tf.py_func(
+  res = TFCompat.v1.py_func(
     _py_bleu_score, name="py_bleu_score", stateful=False,
     inp=[hypothesis, truth, hyp_seq_lens, truth_seq_lens], Tout=tf.float32)
   res.set_shape(tf.TensorShape((None,)))
@@ -7002,913 +7163,76 @@ def prod(ls):
     return pure_prod(ls)  # tf.Tensor
 
 
-class Lock(object):
+class _DevMaxBytesInUse:
   """
-  A pure TensorFlow implementation of a mutex / lock.
-  Probably obsolete now, as with TF 1.6.0, there is ``tf.contrib.framework.CriticalSection``.
-  """
+  Like ``tf.contrib.contrib.memory_stats.MaxBytesInUse``.
+  Reimplemented because ``tf.contrib`` got removed.
 
-  def __init__(self, name="Lock"):
-    self._name = name
-    with tf.name_scope(self._name):
-      from tensorflow.python.ops.data_flow_ops import StagingArea
-      self._queue = StagingArea(dtypes=[tf.bool])
-      self._queue_init = self._queue.put([tf.constant(True)])
-
-  def init(self):
-    """
-    :rtype: tf.Operation
-    """
-    return self._queue_init
-
-  def lock(self):
-    """
-    On first call, just returns. Any further call will block, unless there is an unlock() call.
-
-    :rtype: tf.Tensor
-    """
-    with tf.name_scope("%s/lock" % self._name):
-      v, = self._queue.get()
-      return v
-
-  def unlock(self):
-    """
-    Must be called after lock().
-
-    :rtype: tf.Operation
-    """
-    with tf.name_scope("%s/unlock" % self._name):
-      return self._queue.put([tf.constant(True)])
-
-
-class Condition(object):
-  """
-  A pure TensorFlow implementation of a condition.
+  See code for reference:
+  https://github.com/tensorflow/tensorflow/blob/e210cb140a60a74d5e9ce3bf9ebedb21b4910f1c/tensorflow/contrib/memory_stats/kernels/memory_stats_ops.cc
   """
 
-  def __init__(self, lock=None, name="Condition"):
-    self._name = name
-    with tf.variable_scope(name):
-      self._init_ops = []
-      if not lock:
-        lock = Lock()
-        self._init_ops += [lock.init()]
-      self.lock = lock
-      self._waiting_counter = tf.Variable(initial_value=0, trainable=False, name="waiting_counter")
-      self._waiter_queue = tf.FIFOQueue(capacity=1, dtypes=[tf.bool], name="waiter_queue")
-      self._init_ops += [self._waiting_counter.initializer]
-
-  def init(self):
-    """
-    :rtype: tf.Operation
-    """
-    return tf.group(*self._init_ops)
-
-  def wait(self):
-    """
-    Must be called with the lock held, will unlock while waiting for a signal.
-    """
-    with tf.name_scope("%s/wait" % self._name):
-      with sequential_control_dependencies([
-        lambda: self._waiting_counter.assign_add(1, use_locking=True),
-        lambda: self.lock.unlock(),
-        lambda: self._waiter_queue.dequeue(),
-        lambda: self.lock.lock(),
-        lambda: self._waiting_counter.assign_sub(1, use_locking=True)
-      ]):
-        return tf.no_op()
-
-  def wait_counter(self):
-    """
-    :rtype: tf.Tensor
-    """
-    return enforce_copy(self._waiting_counter.read_value())
-
-  def signal(self):
-    """
-    Must be called with the lock held.
-    Emits one signal.
-
-    :rtype: tf.Tensor
-    """
-    with tf.name_scope("%s/signal" % self._name):
-      def on_waiting_counter():
-        """
-        :rtype: tf.Operation
-        """
-        return self._waiter_queue.enqueue(True)
-      return tf.cond(tf.greater(self._waiting_counter.read_value(), 0), on_waiting_counter, lambda: tf.no_op())
-
-  def signal_all(self):
-    """
-    Must be called with the lock held.
-    Emits as many signals as they are waiters.
-    """
-    with tf.name_scope("%s/signal_all" % self._name):
-      count = self.wait_counter()
-      with sequential_control_dependencies([lambda: count, lambda: self.lock.unlock()]):
-        # We must unlock because we could have to do multiple signals but the waiter-queue has only capacity 1,
-        # i.e. we would (dead)lock otherwise.
-        def body(i):
-          """
-          :param tf.Tensor i:
-          :rtype: tf.Tensor
-          """
-          with tf.control_dependencies([i]):
-            with tf.control_dependencies([self._waiter_queue.enqueue(False)]):
-              return i + 1
-        loop = tf.while_loop(
-          cond=lambda i: tf.less(i, count),
-          body=body, parallel_iterations=1, back_prop=False, loop_vars=[0])
-        with tf.control_dependencies([loop]):
-          return self.lock.lock()
-
-
-class GlobalTensorArrayOpMaker:
-  """
-  Creates a TensorArray which does not use the per-run ("per-step") resource manager container
-  but uses the standard container which persists across runs.
-  This TensorArray resource handle is then just a standard TensorArray resource handle which
-  can be used with all TensorArray related functions/ops.
-
-  Note: This whole implementation currently does not work because tensor_array.h is not available.
-  See https://github.com/tensorflow/tensorflow/issues/10527
-  and test_GlobalTensorArray().
-
-  An alternative to this might be the MapStagingArea (https://github.com/tensorflow/tensorflow/pull/9686),
-  which should get into TF 1.2.2.
-  """
-
-  code = """
-    #include "tensorflow/core/framework/op_kernel.h"
-    #include "tensorflow/core/framework/register_types.h"
-    #include "tensorflow/core/framework/resource_mgr.h"
-    #include "tensorflow/core/framework/tensor.h"
-    #include "tensorflow/core/framework/tensor_shape.h"
-    #include "tensorflow/core/framework/types.h"
-    #include "tensorflow/core/kernels/bounds_check.h"
-    #include "tensorflow/core/kernels/tensor_array.h"
-    #include "tensorflow/core/lib/core/errors.h"
-    #include "tensorflow/core/lib/core/refcount.h"
-    #include "tensorflow/core/lib/strings/strcat.h"
-    #include "tensorflow/core/platform/dynamic_annotations.h"
-    #include "tensorflow/core/platform/logging.h"
-    #include "tensorflow/core/platform/thread_annotations.h"
-    #include "tensorflow/core/platform/types.h"
-
-    using namespace tensorflow;
-
-    // Adopted from https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/ops/data_flow_ops.cc.
-    REGISTER_OP("GlobalTensorArray")
-    .Input("size: int32")
-    .Attr("container: string = ''")
-    .Attr("shared_name: string = ''")
-    .Attr("dtype: type")
-    .Attr("element_shape: shape = { unknown_rank: true }")
-    .Attr("dynamic_size: bool = false")
-    .Attr("clear_after_read: bool = true")
-    .Attr("tensor_array_name: string = ''")
-    .Output("handle: resource")
-    .Output("flow: float")
-    .SetIsStateful()
-    .SetShapeFn([](InferenceContext* c) {
-      ShapeHandle unused;
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 0, &unused));
-      c->set_output(0, c->Vector(2));
-      c->set_output(1, c->Scalar());
-      return Status::OK();
-    })
-    .Doc("GlobalTensorArray, persistent across runs");
-
-    // Copied from https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/kernels/tensor_array_ops.cc,
-    // and https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/framework/resource_op_kernel.h.
-    // The original TensorArrayOp used the per-run ("per-step") resource manager container
-    // but we use the standard container which persists across runs.
-    class GlobalTensorArrayOp : public OpKernel {
-     public:
-      explicit GlobalTensorArrayOp(OpKernelConstruction* context)
-          : OpKernel(context), device_type_(context->device_type()) {
-        OP_REQUIRES_OK(context, context->GetAttr("dtype", &dtype_));
-        OP_REQUIRES_OK(context, context->GetAttr("element_shape", &element_shape_));
-        OP_REQUIRES_OK(context, context->GetAttr("dynamic_size", &dynamic_size_));
-        OP_REQUIRES_OK(context,
-                       context->GetAttr("clear_after_read", &clear_after_read_));
-        OP_REQUIRES_OK(context,
-                       context->GetAttr("tensor_array_name", &tensor_array_name_));
-        if (tensor_array_name_.empty()) tensor_array_name_ = name();
-
-        AllocatorAttributes alloc_attr;
-        alloc_attr.set_on_host(true);
-        OP_REQUIRES_OK(context, context->allocate_persistent(
-                                tensorflow::DT_STRING, tensorflow::TensorShape({2}),
-                                &handle_, alloc_attr));
-      }
-
-      ~GlobalTensorArrayOp() {
-        if (resource_ != nullptr) {
-          resource_->Unref();
-          if (cinfo_.resource_is_private_to_kernel()) {
-            if (!cinfo_.resource_manager()
-                     ->template Delete<T>(cinfo_.container(), cinfo_.name())
-                     .ok()) {
-              // Do nothing; the resource can have been deleted by session resets.
-            }
-          }
-        }
-      }
-
-      void Compute(OpKernelContext* ctx) override {
-        mutex_lock l(mu_);
-        if (resource_ == nullptr) {
-          ResourceMgr* mgr = ctx->resource_manager();
-          OP_REQUIRES(ctx, mgr != nullptr, errors::Internal("No resource manager."));
-          OP_REQUIRES_OK(ctx, cinfo_.Init(mgr, def()));
-          auto h = handle_.AccessTensor(ctx)->template flat<string>();
-          h(0) = cinfo_.container();
-          h(1) = cinfo_.name();
-          OP_REQUIRES_OK(ctx, CreateTensorArray(ctx, rm, &handle_, &resource_));
-        }
-
-        Tensor* handle;
-        OP_REQUIRES_OK(ctx, ctx->allocate_output(0, TensorShape({}), &handle));
-        handle->flat<ResourceHandle>()(0) =
-            resource_->resource_handle(ctx);
-        if (ctx->num_outputs() == 2) {
-          // Create the flow output.
-          Tensor* flow;
-          OP_REQUIRES_OK(ctx, ctx->allocate_output(1, TensorShape({}), &flow));
-          if (device_type_ == DEVICE_CPU) {
-            // Value doesn't matter, but this makes msan not complaint about
-            // copying an uninitialized value. To do this on GPU would require
-            // a kernel launch or a host->device memcpy, so we avoid that.
-            flow->flat<float>()(0) = 0;
-          }
-        }
-      }
-
-     private:
-      Status CreateTensorArray(OpKernelContext* ctx, ResourceMgr* rm,
-                               Tensor* tensor_array_output_handle,
-                               TensorArray** output_tensor_array) EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-        const Tensor* tensor_size;
-        TF_RETURN_IF_ERROR(ctx->input("size", &tensor_size));
-
-        if (!TensorShapeUtils::IsScalar(tensor_size->shape())) {
-          return errors::InvalidArgument(
-              "TensorArray size must be scalar, but had shape: ",
-              tensor_size->shape().DebugString());
-        }
-        const int32 size = tensor_size->scalar<int32>()();
-        if (size < 0) {
-          return errors::InvalidArgument("Size should be >= 0.");
-        }
-
-        TensorArray* tensor_array = new TensorArray(
-            cinfo_.name(), dtype_, *tensor_array_output_handle, size, element_shape_,
-            dynamic_size_, false /* multiple_writes_aggregate */,
-            false /* is_grad */, -1 /* marked_size */, clear_after_read_);
-
-        // TODO: could use LookupOrCreate instead...
-        TF_RETURN_IF_ERROR(
-            rm->Create(cinfo_.container(), cinfo_.name(), tensor_array));
-
-        *output_tensor_array = tensor_array;
-
-        return Status::OK();
-      }
-
-      mutex mu_;
-      ContainerInfo cinfo_ GUARDED_BY(mu_);
-      PersistentTensor handle_ GUARDED_BY(mu_);
-      TensorArray* resource_ GUARDED_BY(mu_) = nullptr;
-
-      const DeviceType device_type_;
-      DataType dtype_;
-      PartialTensorShape element_shape_;
-      bool dynamic_size_;
-      bool clear_after_read_;
-      string tensor_array_name_;  // The name used to create the TensorArray.
-
-      TF_DISALLOW_COPY_AND_ASSIGN(GlobalTensorArrayOp);
-    };
-
-    REGISTER_KERNEL_BUILDER(Name("GlobalTensorArray").Device(DEVICE_CPU), GlobalTensorArrayOp);
-
-  """
-
-  def __init__(self):
-    self._mod = None
-
-  def _make_mod(self):
-    if self._mod:
-      return self._mod
-
-    comp = OpCodeCompiler(
-      base_name="GlobalTensorArray",
-      code_version=1,  # code also ends up in hash, thus this doesn't always needs to be increased
-      code=self.code,
-      include_deps=[],
-      ld_flags=[])
-
-    mod = comp.load_tf_module()
-    self._mod = mod
-    return mod
-
-  def get_op(self):
-    """
-    :return: op
-    """
-    mod = self._make_mod()
-    from Util import camel_case_to_snake_case
-    op = getattr(mod, camel_case_to_snake_case("GlobalTensorArray"))
-    return op
-
-
-class TFArrayContainer(object):
-  """
-  Array container, like std::vector, with random index access.
-
-  Currently does not work.
-  See https://github.com/tensorflow/tensorflow/issues/10950,
-  and test_TFArrayContainer().
-  Bug #10950 is fixed upstream, should be in TF 1.2.2.
-
-  An alternative to this could be :class:`GlobalTensorArrayOpMaker`
-  and `MapStagingArea <https://github.com/tensorflow/tensorflow/pull/9686>`_,
-  which should get into TF 1.2.2.
-  """
-
-  code = """
-    #include <vector>
-
-    // For Eigen::ThreadPoolDevice.
-    #define EIGEN_USE_THREADS 1
-
-    #include "tensorflow/core/framework/op.h"
-    #include "tensorflow/core/framework/shape_inference.h"
-    #include "tensorflow/core/framework/op_kernel.h"
-    #include "tensorflow/core/framework/resource_mgr.h"
-    #include "tensorflow/core/framework/resource_op_kernel.h"
-    #include "tensorflow/core/framework/tensor.h"
-    #include "tensorflow/core/framework/tensor_shape.h"
-    #include "tensorflow/core/framework/types.h"
-    #include "tensorflow/core/platform/macros.h"
-    #include "tensorflow/core/platform/mutex.h"
-    #include "tensorflow/core/platform/types.h"
-    #include "tensorflow/core/public/version.h"
-    #include "tensorflow/core/common_runtime/device.h"
-
-    using namespace tensorflow;
-
-    REGISTER_OP("ArrayContainerCreate")
-    .Attr("T: type")
-    .Attr("container: string = ''")
-    .Attr("shared_name: string = ''")
-    .Output("resource: resource")
-    .SetIsStateful()
-    .SetShapeFn(shape_inference::ScalarShape)
-    .Doc(R"doc(Array container, random index access)doc");
-
-    REGISTER_OP("ArrayContainerGetSize")
-    .Input("handle: resource")
-    .Output("out: int32")
-    .SetShapeFn(shape_inference::ScalarShape)
-    ;
-
-    REGISTER_OP("ArrayContainerSetSize")
-    .Input("handle: resource")
-    .Input("size: int32")
-    ;
-
-    REGISTER_OP("ArrayContainerGet")
-    .Attr("T: type")
-    .Input("handle: resource")
-    .Input("index: int32")
-    .Output("out: T")
-    ;
-
-    REGISTER_OP("ArrayContainerSet")
-    .Attr("T: type")
-    .Input("handle: resource")
-    .Input("index: int32")
-    .Input("value: T")
-    ;
-
-    // https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/framework/resource_mgr.h
-    struct ArrayContainer : public ResourceBase {
-      ArrayContainer(const DataType& dtype) : dtype_(dtype) {}
-
-  string DebugString()
-#if (TF_MAJOR_VERSION >= 1 && TF_MINOR_VERSION >= 14)
-const
-#endif
-override {
-      return "ArrayContainer";
-      }
-      int64 MemoryUsed() const override { return 0; };
-
-      mutex mu_;
-      const DataType dtype_;
-      std::vector<PersistentTensor> data_ GUARDED_BY(mu_);
-
-      int32 get_size() {
-        mutex_lock l(mu_);
-        return (int32) data_.size();
-      }
-
-      Status set_size(int32 size) {
-        if(size < 0)
-          return errors::InvalidArgument("size ", size, " must be >= 0");
-        mutex_lock l(mu_);
-        data_.resize((size_t) size);
-        return Status::OK();
-      }
-
-      Status get(OpKernelContext* ctx, int32 idx, PersistentTensor* v) {
-        mutex_lock l(mu_);
-        if(idx < 0)
-          return errors::InvalidArgument("idx ", idx, " must be >= 0");
-        if((size_t)idx >= data_.size())
-          return errors::InvalidArgument("idx ", idx, " must be < size ", data_.size());
-        PersistentTensor& t = data_[(size_t)idx];
-        if(!t.IsInitialized())
-          return errors::InvalidArgument("tensor at idx ", idx, " must have been set before");
-        *v = t;
-        return Status::OK();
-      }
-
-      Status set(OpKernelContext* ctx, int32 idx, const Tensor& v) {
-        mutex_lock l(mu_);
-        if(idx < 0)
-          return errors::InvalidArgument("idx ", idx, " must be >= 0");
-        if((size_t)idx >= data_.size())
-          return errors::InvalidArgument("idx ", idx, " must be < size ", data_.size());
-        data_[idx] = PersistentTensor(v);
-        return Status::OK();
-      }
-
-    };
-
-    // https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/framework/resource_op_kernel.h
-    class ArrayContainerCreateOp : public ResourceOpKernel<ArrayContainer> {
-    public:
-      explicit ArrayContainerCreateOp(OpKernelConstruction* context) : ResourceOpKernel(context) {
-        OP_REQUIRES_OK(context, context->GetAttr("T", &dtype_));
-      }
-
-    private:
-      virtual bool IsCancellable() const { return false; }
-      virtual void Cancel() {}
-
-      Status CreateResource(ArrayContainer** ret) override EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-        *ret = new ArrayContainer(dtype_);
-        if(*ret == nullptr)
-          return errors::ResourceExhausted("Failed to allocate");
-        return Status::OK();
-      }
-
-      Status VerifyResource(ArrayContainer* ar) override {
-        if(ar->dtype_ != dtype_)
-          return errors::InvalidArgument("Data type mismatch: expected ", DataTypeString(dtype_),
-                                         " but got ", DataTypeString(ar->dtype_), ".");
-        return Status::OK();
-      }
-
-      DataType dtype_;
-    };
-    REGISTER_KERNEL_BUILDER(Name("ArrayContainerCreate").Device(DEVICE_CPU), ArrayContainerCreateOp);
-
-    class ArrayContainerGetSizeOp : public OpKernel {
-    public:
-      using OpKernel::OpKernel;
-
-      void Compute(OpKernelContext* context) override {
-        ArrayContainer* ar;
-
-        const Tensor* handle;
-        OP_REQUIRES_OK(context, context->input("handle", &handle));
-        OP_REQUIRES_OK(context, GetResourceFromContext(context, "handle", &ar));
-        core::ScopedUnref unref(ar);
-
-        int32 size = ar->get_size();
-        Tensor* tensor_size = nullptr;
-        OP_REQUIRES_OK(context, context->allocate_output(0, TensorShape({}), &tensor_size));
-        tensor_size->flat<int32>().setConstant(size);
-      }
-    };
-    REGISTER_KERNEL_BUILDER(Name("ArrayContainerGetSize").Device(DEVICE_CPU), ArrayContainerGetSizeOp);
-
-    class ArrayContainerSetSizeOp : public OpKernel {
-    public:
-      using OpKernel::OpKernel;
-
-      void Compute(OpKernelContext* context) override {
-        ArrayContainer* ar;
-        OP_REQUIRES_OK(context, GetResourceFromContext(context, "handle", &ar));
-        core::ScopedUnref unref(ar);
-
-        const Tensor* tensor_size;
-        OP_REQUIRES_OK(context, context->input("size", &tensor_size));
-        OP_REQUIRES(context, TensorShapeUtils::IsScalar(tensor_size->shape()),
-                    errors::InvalidArgument(
-                        "TensorArray index must be scalar, but had shape: ",
-                        tensor_size->shape().DebugString()));
-        const int32 size = tensor_size->scalar<int32>()();
-        OP_REQUIRES_OK(context, ar->set_size(size));
-      }
-    };
-    REGISTER_KERNEL_BUILDER(Name("ArrayContainerSetSize").Device(DEVICE_CPU), ArrayContainerSetSizeOp);
-
-    class ArrayContainerGetOp : public OpKernel {
-    public:
-      explicit ArrayContainerGetOp(OpKernelConstruction* context) : OpKernel(context) {
-        OP_REQUIRES_OK(context, context->GetAttr("T", &dtype_));
-      }
-
-      void Compute(OpKernelContext* context) override {
-        ArrayContainer* ar;
-        OP_REQUIRES_OK(context, GetResourceFromContext(context, "handle", &ar));
-        core::ScopedUnref unref(ar);
-
-        const Tensor* tensor_index;
-        OP_REQUIRES_OK(context, context->input("index", &tensor_index));
-        OP_REQUIRES(context, TensorShapeUtils::IsScalar(tensor_index->shape()),
-                    errors::InvalidArgument(
-                        "TensorArray index must be scalar, but had shape: ",
-                        tensor_index->shape().DebugString()));
-        const int32 index = tensor_index->scalar<int32>()();
-
-        PersistentTensor value;
-        OP_REQUIRES_OK(context, ar->get(context, index, &value));
-        context->set_output(0, *value.AccessTensor(context));
-      }
-
-    private:
-      DataType dtype_;
-    };
-    REGISTER_KERNEL_BUILDER(Name("ArrayContainerGet").Device(DEVICE_CPU), ArrayContainerGetOp);
-
-    class ArrayContainerSetOp : public OpKernel {
-    public:
-      explicit ArrayContainerSetOp(OpKernelConstruction* context) : OpKernel(context) {
-        OP_REQUIRES_OK(context, context->GetAttr("T", &dtype_));
-      }
-
-      void Compute(OpKernelContext* context) override {
-        ArrayContainer* ar;
-        OP_REQUIRES_OK(context, GetResourceFromContext(context, "handle", &ar));
-        core::ScopedUnref unref(ar);
-
-        const Tensor* tensor_index;
-        const Tensor* tensor_value;
-        OP_REQUIRES_OK(context, context->input("index", &tensor_index));
-        OP_REQUIRES_OK(context, context->input("value", &tensor_value));
-
-        OP_REQUIRES(context, TensorShapeUtils::IsScalar(tensor_index->shape()),
-                    errors::InvalidArgument(
-                        "index must be scalar, but had shape: ",
-                        tensor_index->shape().DebugString()));
-        const int32 index = tensor_index->scalar<int32>()();
-        OP_REQUIRES(context, tensor_value->IsInitialized(), errors::InvalidArgument("value must be initialized"));
-
-        OP_REQUIRES_OK(context, ar->set(context, index, *tensor_value));
-      }
-
-    private:
-      DataType dtype_;
-    };
-    REGISTER_KERNEL_BUILDER(Name("ArrayContainerSet").Device(DEVICE_CPU), ArrayContainerSetOp);
-  """
-
-  _mod = None
-
-  def __init__(self, dtype, handle=None, container=None, shared_name=None, name="array_container"):
-    """
-    :param tf.DType dtype:
-    :param str container:
-    :param str shared_name:
-    :param str name:
-    :param tf.resource handle: existing handle to reuse. otherwise we will create a new one
-    """
-    self.dtype = dtype
-    if handle is not None:
-      self.handle = handle
-    else:
-      self.handle = self._create(dtype=dtype, container=container, shared_name=shared_name, name=name)
-
-  def __repr__(self):
-    return "<%s %r %r>" % (self.__class__.__name__, self.dtype, self.handle)
+  _tf_mod = None
 
   @classmethod
-  def _make_mod(cls):
-    if cls._mod:
-      return cls._mod
-    comp = OpCodeCompiler(
-      base_name="TFArrayContainer",
-      code_version=1,  # code also ends up in hash, thus this doesn't always needs to be increased
-      code=cls.code,
-      include_deps=[],
-      use_cuda_if_available=False)
-    mod = comp.load_tf_module()
-    cls._mod = mod
-    return mod
-
-  def _get_op(self, k):
-    mod = self._make_mod()
-    from Util import camel_case_to_snake_case
-    return getattr(mod, camel_case_to_snake_case(k))
-
-  def _create(self, dtype, container=None, shared_name=None, name="array_container"):
+  def get_mod(cls, verbose=False):
     """
-    :param tf.DType dtype:
-    :param str container:
-    :param str shared_name:
-    :param str name:
-    :return: handle to ArrayContainer
-    :rtype: tf.resource
+    :param bool verbose:
+    :return: module
     """
-    op = self._get_op("ArrayContainerCreate")
-    return op(T=dtype, container=container, shared_name=shared_name, name=name)
+    if cls._tf_mod:
+      return cls._tf_mod
 
-  def get_size(self):
+    src_code = """
+    #include "tensorflow/core/framework/common_shape_fns.h"
+    #include "tensorflow/core/framework/op.h"
+    #include "tensorflow/core/framework/op_kernel.h"
+
+    using namespace tensorflow;
+
+    REGISTER_OP("DevMaxBytesInUse")
+      .Output("out: int64")
+      .SetShapeFn(shape_inference::ScalarShape);
+
+    class DevMaxBytesInUseOp : public OpKernel {
+    public:
+      explicit DevMaxBytesInUseOp(OpKernelConstruction* context) : OpKernel(context) {}
+
+      void Compute(OpKernelContext* context) override {
+        Allocator* allocator =
+          context->device()->GetAllocator(AllocatorAttributes());
+        OP_REQUIRES(context, allocator, errors::Internal("No device allocator available."));
+        auto allocator_stats = allocator->GetStats();
+
+        Tensor* output_tensor = nullptr;
+        OP_REQUIRES_OK(
+          context, context->allocate_output(0, TensorShape({}), &output_tensor));
+        output_tensor->scalar<int64>()() = allocator_stats ? allocator_stats->peak_bytes_in_use : 0;
+      }
+    };
+
+    REGISTER_KERNEL_BUILDER(Name("DevMaxBytesInUse").Device(DEVICE_CPU), DevMaxBytesInUseOp);
+    REGISTER_KERNEL_BUILDER(Name("DevMaxBytesInUse").Device(DEVICE_GPU).HostMemory("out"), DevMaxBytesInUseOp);
     """
-    :return: size int32 scalar
+
+    compiler = OpCodeCompiler(
+      base_name="DevMaxBytesInUse", code_version=1, code=src_code,
+      is_cpp=True, use_cuda_if_available=True,
+      # This would lead to a get_tf_list_local_devices call, which we might not want at this point.
+      cuda_auto_min_compute_capability=False,
+      verbose=verbose)
+    tf_mod = compiler.load_tf_module()
+    assert hasattr(tf_mod, "dev_max_bytes_in_use"), "content of mod: %r" % (dir(tf_mod),)
+    cls._tf_mod = tf_mod
+    return tf_mod
+
+  @classmethod
+  def max_bytes_in_use(cls):
+    """
+    :return: scalar string
     :rtype: tf.Tensor
     """
-    op = self._get_op("ArrayContainerGetSize")
-    return op(handle=self.handle)
-
-  def set_size(self, size):
-    """
-    :param tf.Tensor size:
-    :return: operation
-    :rtype: tf.Operation
-    """
-    op = self._get_op("ArrayContainerSetSize")
-    return op(handle=self.handle, size=size)
-
-  def get(self, index):
-    """
-    :param tf.Tensor index: >= 0 and < size
-    :return: tensor at that index
-    :rtype: tf.Tensor
-    """
-    op = self._get_op("ArrayContainerGet")
-    return op(T=self.dtype, handle=self.handle, index=index)
-
-  def set(self, index, value):
-    """
-    :param tf.Tensor index: >= 0 and < size
-    :param tf.Tensor value:
-    :return: operation
-    :rtype: tf.Operation
-    """
-    op = self._get_op("ArrayContainerSet")
-    return op(handle=self.handle, index=index, value=value)
-
-
-class ExplicitRandomShuffleQueue(object):
-  """
-  This is intended to behave very much like tf.RandomShuffleQueue,
-  except that it's implemented by other TF native ops / data structures,
-  and you can change min_after_dequeue at runtime.
-  This means that if you have your own logic about when to end,
-  you can set min_after_dequeue=0 and dequeue all the remaining entries from the queue,
-  and then later increase min_after_dequeue again.
-  You can also start with a small min_after_dequeue and increase the number steadily.
-  The original tf.RandomShuffleQueue had the effect of a reset min_after_dequeue=0
-  after you closed the queue. However, there was no way to reopen the queue.
-  That is the whole reason this implementation exists.
-
-  One difference of this implementation is that you must call the init() op once before usage.
-
-  One way to implement this is in pure TF.
-  We need some TF container type which supports having entries of different shapes
-  (where the shape can differ where-ever we specified None).
-  We also need some TF container which we can access by index.
-  tf.TensorArray can handle that.
-
-  Another way to implement this is by multiple stateful tf.py_func which all reference this instance.
-  """
-
-  def __init__(self, capacity, min_after_dequeue=0, dtypes=None, shapes=None,
-               names=None, seed=None, shared_name=None,
-               name="explicit_random_shuffle_queue"):
-    """
-    :param int capacity:
-    :param int|tf.Tensor min_after_dequeue:
-    :param list[str|tf.DType] dtypes:
-    :param list[tuple[int|tf.Tensor|None]] shapes:
-    :param list[str]|None names:
-    :param int seed:
-    :param str|None shared_name:
-    :param str name:
-    """
-    assert dtypes
-    assert not shared_name, "not supported yet"
-    assert isinstance(dtypes, list)
-    self.dtypes = dtypes
-    if shapes is None:
-      shapes = [None] * len(dtypes)
-    assert isinstance(shapes, list)
-    self.shapes = shapes
-    assert len(shapes) == len(dtypes)
-    if names is not None:
-      assert isinstance(names, list)
-      assert len(names) == len(dtypes)
-    self.names = names
-    self._name = name
-    self._seed = seed
-
-    with tf.name_scope(self._name):
-      self._lock = Lock()
-      self._is_full_cond = Condition(lock=self._lock)
-      self._min_after_dequeue_cond = Condition(lock=self._lock)
-
-      self.capacity = capacity
-      self._min_after_dequeue = tf.Variable(
-        initial_value=min_after_dequeue, dtype=tf.int32, trainable=False, name="min_after_dequeue")
-
-      self._is_written = tf.Variable(
-        initial_value=tf.zeros(shape=(self.capacity,), dtype=tf.int8), trainable=False, name="free_mask")
-
-      with tf.control_dependencies([self._min_after_dequeue.initializer]):
-        self._init_ops = tf.group(self._is_written.initializer)
-      self._init_ops = tf.group(
-        self._init_ops, self._lock.init(), self._is_full_cond.init(), self._min_after_dequeue_cond.init())
-
-      # TODO Seems like we cannot use tf.TensorArray for what we need here...
-      # see test_TensorArray() and https://stackoverflow.com/questions/44418036/
-      # Solutions are GlobalTensorArrayOpMaker or TFArrayContainer which also both currently do not work.
-      # Thus at the moment, I don't see any good way to make this work...
-      # TODO Another option might be MapStagingArea (https://github.com/tensorflow/tensorflow/pull/9686).
-      # This should get into TF 1.2.2.
-      self._tas = [
-        tf.TensorArray(
-          dtype=dtype, size=capacity, clear_after_read=True,
-          element_shape=shape, name="%s_TensorArray" % name)
-        for (dtype, shape, name) in zip(self.dtypes, self.shapes, self.names or ["unk"] * len(self.dtypes))]
-      self._flows = [tf.Variable(initial_value=ta.flow) for ta in self._tas]
-      self._init_ops = tf.group(self._init_ops, *[flow.initializer for flow in self._flows])
-      assert len(self._tas) == len(self.dtypes)
-      self._tas_dict = {name: ta for (name, ta) in zip(self.names, self._tas)} if self.names else None
-
-  def init(self):
-    """
-    :rtype: tf.Operation
-    """
-    return self._init_ops
-
-  def size(self):
-    """
-    :rtype: tf.Tensor
-    """
-    with reuse_name_scope("%s/size" % self._name):
-      return tf.count_nonzero(self._is_written, dtype=tf.int32)
-
-  def min_after_dequeue_read(self):
-    """
-    :rtype: tf.Tensor
-    """
-    return enforce_copy(self._min_after_dequeue.read_value())
-
-  def min_after_dequeue_assign(self, min_after_dequeue):
-    """
-    :param tf.Tensor min_after_dequeue:
-    :rtype: tf.Operation
-    """
-    with sequential_control_dependencies([
-      lambda: self._lock.lock(),
-      lambda: self._min_after_dequeue.assign(min_after_dequeue, use_locking=True),
-      lambda: self._min_after_dequeue_cond.signal_all(),
-      lambda: self._lock.unlock()
-    ]):
-      return tf.no_op()
-
-  def _get_cur_tensor_array(self, idx):
-    ta = self._tas[idx]
-    return tf.TensorArray(dtype=ta.dtype, handle=ta.handle, flow=enforce_copy(self._flows[idx].read_value()))
-
-  def _get_cur_tas(self):
-    return [self._get_cur_tensor_array(i) for i in range(len(self._tas))]
-
-  def _tas_write(self, index, vs):
-    tas = self._get_cur_tas()
-    assert len(vs) == len(tas)
-    tas_flows = [ta.write(index, v).flow for (ta, v) in zip(tas, vs)]
-    return [tf.assign(flow_var, flow) for (flow_var, flow) in zip(self._flows, tas_flows)]
-
-  def _tas_read(self, index):
-    tas = self._get_cur_tas()
-    return [ta.read(index) for ta in tas]
-
-  def enqueue(self, v):
-    """
-    :param list[tf.Tensor]|dict[str,tf.Tensor]|tf.Tensor v:
-    :rtype: tf.Operation
-    """
-    if self.names:
-      assert isinstance(v, dict)
-      v = [v[name] for name in self.names]
-    elif not isinstance(v, list) and len(self.dtypes) == 1:
-      v = [v]
-    assert isinstance(v, list)
-    assert len(v) == len(self.dtypes)
-    with reuse_name_scope("%s/enqueue" % self._name):
-      with tf.control_dependencies([self._lock.lock()]):
-        with tf.control_dependencies([self._loop_while_full()]):
-          index = tf.cast(tf.arg_min(self._is_written, dimension=0), tf.int32)
-          with tf.control_dependencies([tf.scatter_update(self._is_written, index, 1)]):
-            with tf.control_dependencies(self._tas_write(index=index, vs=v)):
-              with tf.control_dependencies([self._maybe_signal_min_after_dequeue()]):
-                return self._lock.unlock()
-
-  def _is_full(self):
-    return tf.greater_equal(self.size(), self.capacity, name="is_full")
-
-  def _loop_while_full(self):
-    """
-    Called with lock held.
-    """
-    def loop_cond(last):
-      """
-      :param tf.Tensor last:
-      :rtype: tf.Tensor
-      """
-      with tf.control_dependencies([last]):
-        return self._is_full()
-
-    def body(last):
-      """
-      :param tf.Tensor last:
-      :rtype: tf.Tensor
-      """
-      # This gets only executed if the queue is full. We still have the lock.
-      with tf.control_dependencies([last]):
-        with tf.control_dependencies([self._is_full_cond.wait()]):
-          return tf.identity(last)
-
-    return tf.while_loop(
-      name="loop_while_full", cond=loop_cond, body=body, loop_vars=[0], parallel_iterations=1, back_prop=False)
-
-  def _have_min_after_dequeue(self):
-    return tf.greater_equal(self.size(), self._min_after_dequeue, name="have_min_after_dequeue")
-
-  def _maybe_signal_min_after_dequeue(self):
-    return tf.cond(
-      self._have_min_after_dequeue(),
-      lambda: self._min_after_dequeue_cond.signal(),
-      lambda: tf.no_op(),
-      name="maybe_signal_min_after_dequeue")
-
-  def _loop_while_not_min_after_dequeue(self):
-    """
-    Called with lock held.
-    """
-    def loop_cond(last):
-      """
-      :param tf.Tensor last:
-      :rtype: tf.Tensor
-      """
-      with tf.control_dependencies([last]):
-        return tf.logical_not(self._have_min_after_dequeue())
-
-    def body(last):
-      """
-      :param tf.Tensor last:
-      :rtype: tf.Tensor
-      """
-      # This gets only executed if we not have min-after-dequeue. We still have the lock.
-      with tf.control_dependencies([last]):
-        with tf.control_dependencies([self._min_after_dequeue_cond.wait()]):
-          return tf.identity(last)
-
-    return tf.while_loop(
-      name="loop_while_not_min_after_dequeue",
-      cond=loop_cond, body=body, loop_vars=[0], parallel_iterations=1, back_prop=False)
-
-  def dequeue(self):
-    """
-    :rtype: tf.Tensor
-    """
-    with reuse_name_scope("%s/dequeue" % self._name):
-      with tf.control_dependencies([self._lock.lock()]):
-        with tf.control_dependencies([self._loop_while_not_min_after_dequeue()]):
-          free_idxs = tf.cast(tf.where(tf.equal(self._is_written, 1)), tf.int32)  # (num_true, 1)
-          free_idxs = tf.random_shuffle(free_idxs, seed=self._seed)
-          index = free_idxs[0][0]
-          vs = self._tas_read(index)
-          with tf.control_dependencies(vs):
-            with tf.control_dependencies([tf.scatter_update(self._is_written, index, 0)]):
-              with tf.control_dependencies([self._is_full_cond.signal()]):
-                with tf.control_dependencies([self._lock.unlock()]):
-                  vs = [tf.identity(v) for v in vs]
-                  if self.names:
-                    return {name: v for (name, v) in zip(self.names, vs)}
-                  elif len(vs) == 1:
-                    return vs[0]
-                  else:
-                    return vs
+    return cls.get_mod().dev_max_bytes_in_use()
 
 
 def mem_usage_for_dev(dev_name):
@@ -7924,10 +7248,13 @@ def mem_usage_for_dev(dev_name):
     """
     :rtype:  tf.Tensor
     """
-    from tensorflow.contrib import memory_stats
-    # It's not so clear what BytesInUse returns. https://stackoverflow.com/questions/47903039/
-    # Thus we always use MaxBytesInUse for now, although this is also not so nice.
-    bytes_in_use = memory_stats.MaxBytesInUse
+    try:
+      from tensorflow.contrib import memory_stats
+      # It's not so clear what BytesInUse returns. https://stackoverflow.com/questions/47903039/
+      # Thus we always use MaxBytesInUse for now, although this is also not so nice.
+      bytes_in_use = memory_stats.MaxBytesInUse
+    except ImportError:  # TF 2
+      bytes_in_use = _DevMaxBytesInUse.max_bytes_in_use
     # try:
     #   bytes_in_use = memory_stats.BytesInUse  # since TF 1.4.0
     # except AttributeError:
@@ -7949,6 +7276,7 @@ def identity_with_debug_log(x, args, out, name="DebugLogOp"):
   :return: x
   :rtype: tf.Tensor
   """
+  import TFCompat
   from Util import dict_joined
   none_args = {k: None for (k, v) in args.items() if v is None}
   arg_keys = sorted([k for k in args.keys() if k not in none_args])
@@ -7963,7 +7291,7 @@ def identity_with_debug_log(x, args, out, name="DebugLogOp"):
     return x
 
   with tf.name_scope(name):
-    y, = tf.py_func(
+    y, = TFCompat.v1.py_func(
       py_func, [x] + [args[k] for k in arg_keys], [x.dtype], stateful=True)
     with tf.control_dependencies([y]):
       return tf.identity(x)
@@ -7987,12 +7315,13 @@ def add_check_numerics_ops(
   :return: operation which performs all the checks
   :rtype: tf.Operation
   """
+  import TFCompat
   if fetches is None:
-    ops = tf.get_default_graph().get_operations()
+    ops = TFCompat.v1.get_default_graph().get_operations()
   else:
     fetch_ops = [v.op if isinstance(v, tf.Tensor) else v for v in fetches]
     assert all([isinstance(op, tf.Operation) for op in fetch_ops])
-    from tensorflow.contrib import graph_editor
+    from extern import graph_editor
     ops = graph_editor.get_backward_walk_ops(fetch_ops, inclusive=True, control_inputs=True)
   if ignore_ops is None:
     # The checks could increase the memory usage a lot.
@@ -8018,7 +7347,7 @@ def add_check_numerics_ops(
       # Frames from within a while-loop are partly broken.
       # https://github.com/tensorflow/tensorflow/issues/2211
       # noinspection PyProtectedMember
-      if op._get_control_flow_context() != tf.get_default_graph()._get_control_flow_context():
+      if op._get_control_flow_context() != TFCompat.v1.get_default_graph()._get_control_flow_context():
         continue
       for output in op.outputs:
         if output.dtype not in [tf.float16, tf.float32, tf.float64]:
@@ -8028,9 +7357,9 @@ def add_check_numerics_ops(
           if debug_print_added_checks:
             print("add check for:", output, op.type)
           if use_check_numerics:
-            check_op = [tf.check_numerics(output, message=message, name=op.name + "_check_numerics")]
+            check_op = [TFCompat.v1.check_numerics(output, message=message, name=op.name + "_check_numerics")]
           else:
-            is_finite = tf.reduce_all(tf.is_finite(output))
+            is_finite = tf.reduce_all(TFCompat.v1.is_finite(output))
             check_op = [tf.Assert(is_finite, [message, "Tensor had inf or nan values:", output])]
     return tf.group(*check_op)
 
@@ -8056,8 +7385,9 @@ def get_current_control_flow_context():
   """
   :rtype: tensorflow.python.ops.control_flow_ops.ControlFlowContext|None
   """
+  import TFCompat
   # noinspection PyProtectedMember
-  return tf.get_default_graph()._get_control_flow_context()
+  return TFCompat.v1.get_default_graph()._get_control_flow_context()
 
 
 def _get_control_flows(v, yield_none):
@@ -8116,6 +7446,7 @@ def same_control_flow_ctx(x):
   :param tf.Tensor|tf.Operation|int|float|None|list[tf.Tensor|tf.Operation|int|float] x:
   :return: yields context (via tf.control_dependencies)
   """
+  import TFCompat
   ctxs = set(_get_control_flows(x, yield_none=True))
   if not ctxs:
     # There is no tensor given in `x` (just int or so).
@@ -8123,7 +7454,7 @@ def same_control_flow_ctx(x):
     yield None
     return
   assert len(ctxs) == 1, "found multiple context: %r" % ctxs
-  graph = tf.get_default_graph()
+  graph = TFCompat.v1.get_default_graph()
   ctx = list(ctxs)[0]
   # noinspection PyProtectedMember
   cur_ctx = graph._get_control_flow_context()
@@ -8249,7 +7580,19 @@ def tensor_array_like(ta, **kwargs):
     **kwargs)
 
 
-def tensor_array_stack(ta, start=0, stop=None, name=None):
+def _tensor_array_ref(ta):
+  """
+  :param tf.TensorArray ta:
+  :rtype: tf.Tensor
+  """
+  if ta.handle is not None:
+    return ta.handle
+  if ta.flow is not None:
+    return ta.flow
+  raise Exception("Don't know how to handle TensorArray %r" % ta)
+
+
+def tensor_array_stack(ta, start=0, stop=None, name="TensorArrayStack"):
   """
   Extends tf.TensorArray.stack by start/stop options.
 
@@ -8259,10 +7602,11 @@ def tensor_array_stack(ta, start=0, stop=None, name=None):
   :param str name:
   :rtype: tf.Tensor
   """
+  import TFCompat
   if start is 0 and stop is None:
     return ta.stack(name=name)
-  with tf.colocate_with(ta.handle):
-    with tf.name_scope(name, "TensorArrayStack", [ta.handle]):
+  with TFCompat.v1.colocate_with(_tensor_array_ref(ta)):
+    with tf.name_scope(name):
       if stop is None:
         stop = ta.size()
       return ta.gather(tf.range(start, stop), name=name)
@@ -8440,7 +7784,8 @@ def filter_ended_scores(x, end_flags, batch_dim=None, dim=None, score_zero=0.0, 
       filter_score.set_shape(tf.TensorShape([
         batch_dim if isinstance(batch_dim, int) else None,
         dim if isinstance(dim, int) else None]))
-    x = tf.where(end_flags, filter_score, x)
+    end_flags_bc = tf.expand_dims(end_flags, axis=1)
+    x = where_bc(end_flags_bc, filter_score, x)
     x.set_shape(tf.TensorShape([
       batch_dim if isinstance(batch_dim, int) else None,
       dim if isinstance(dim, int) else None]))
@@ -8474,18 +7819,18 @@ def to_float32(x):
   return x.cast_float32
 
 
-def batch_gather(x, indices, keep_dims=False):
+def batch_gather(x, indices, keepdims=False):
   """
   :param tf.Tensor x: (batch,dim,...)
   :param tf.Tensor indices: (batch,) -> [0..dim-1]
-  :param bool keep_dims:
+  :param bool keepdims:
   :return: x[batches,indices[batches]], (batch,...). or (batch,1,...) with keep_dims
   :rtype: tf.Tensor
   """
   with tf.name_scope('batch_gather'):
     idx_ext = nd_indices(to_int32_64(indices))
     y = tf.gather_nd(x, indices=idx_ext)
-    if keep_dims:
+    if keepdims:
       y = tf.expand_dims(y, axis=1)
     return y
 
@@ -8504,6 +7849,7 @@ def unflatten_nd(x, nd_sizes, num_axes=None):
   :return: (B, T_1, ..., T_N, <Ds>), T_i == max(nd_sizes[:, i])
   :rtype: tf.Tensor
   """
+  import TFCompat
   if num_axes is None:
     assert nd_sizes.shape.dims[-1].value
     num_axes = nd_sizes.shape.dims[-1].value
@@ -8530,7 +7876,7 @@ def unflatten_nd(x, nd_sizes, num_axes=None):
       res[tuple([b] + [slice(None, t) for t in py_nd_sizes[b]] + [1])] = idxs
     return res
 
-  indices = tf.py_func(py_get_indices, [nd_sizes], tf.int32, stateful=False)
+  indices = TFCompat.v1.py_func(py_get_indices, [nd_sizes], tf.int32, stateful=False)
   indices.set_shape([None] + ([None] * num_axes) + [2])
   y = tf.gather_nd(x, indices)
   y.set_shape(indices.shape.as_list()[:-1] + x.shape.as_list()[2:])
@@ -8645,8 +7991,15 @@ class _DeviceAttrMod:
     #include "tensorflow/core/framework/op.h"
     #include "tensorflow/core/framework/op_kernel.h"
     #include "tensorflow/core/framework/device_attributes.pb.h"
+    #include "tensorflow/core/public/version.h"
 
     using namespace tensorflow;
+
+    #if (TF_MAJOR_VERSION < 2) || (TF_MAJOR_VERSION == 2 && TF_MINOR_VERSION < 2)
+    using tstring = std::string;
+    #else
+    using tstring = tensorflow::tstring;
+    #endif
 
     REGISTER_OP("GetDeviceAttr")
       .Output("out: string")
@@ -8661,7 +8014,7 @@ class _DeviceAttrMod:
         Tensor* output_tensor = nullptr;
         OP_REQUIRES_OK(
             context, context->allocate_output(0, TensorShape({}), &output_tensor));
-        output_tensor->scalar<string>()() = attribs.physical_device_desc();
+        output_tensor->scalar<::tstring>()() = attribs.physical_device_desc();
       }
     };
 
@@ -8742,6 +8095,21 @@ def print_graph_output(fetches, file=sys.stdout, max_depth=None):
     p(fetch, prefix="fetch: ")
 
 
+def var_handle_or_ref(var):
+  """
+  :param tf.Variable|tensorflow.python.ops.resource_variable_ops.ResourceVariable var:
+  :rtype: tf.Tensor
+  """
+  import TFCompat
+  from tensorflow.python.ops.resource_variable_ops import ResourceVariable
+  if isinstance(var, ResourceVariable):
+    return var.handle
+  if isinstance(var, TFCompat.v1.Variable):
+    # noinspection PyProtectedMember
+    return var._ref()
+  raise TypeError("invalid type for var %r" % var)
+
+
 def find_ops_with_tensor_input(tensors, fetches=None, graph=None):
   """
   :param tf.Tensor|tf.Variable|list[tf.Tensor] tensors:
@@ -8751,8 +8119,25 @@ def find_ops_with_tensor_input(tensors, fetches=None, graph=None):
   :rtype: list[tf.Operation]
   """
   if isinstance(tensors, tf.Variable):
-    # noinspection PyProtectedMember
-    tensors = [tensors._ref(), tensors.value()]
+    from tensorflow.python.ops.resource_variable_ops import ResourceVariable
+    if isinstance(tensors, ResourceVariable):
+      # To keep the behavior more consistent to the old-style ref-variable,
+      # we resolve all ReadVariableOp on the var resource handle,
+      # and also remove VarIsInitializedOp.
+      # If you do not want this, pass the var.handle directly to find_ops_with_tensor_input.
+      ops_ = find_ops_with_tensor_input(tensors.handle, fetches=fetches, graph=graph)
+      ops = []
+      for op in ops_:
+        if op.type == "ReadVariableOp":
+          ops += find_ops_with_tensor_input(op.outputs[0], fetches=fetches, graph=graph)
+        elif op.type == "VarIsInitializedOp":
+          pass  # remove this
+        else:
+          ops.append(op)
+      return ops
+    else:
+      # noinspection PyProtectedMember
+      tensors = [tensors._ref(), tensors.value()]
   if isinstance(tensors, tf.Tensor):
     tensors = [tensors]
   assert all([isinstance(x, tf.Tensor) for x in tensors])
@@ -8762,7 +8147,7 @@ def find_ops_with_tensor_input(tensors, fetches=None, graph=None):
       fetches = [fetches]
     fetches = [x.op if isinstance(x, tf.Tensor) else x for x in fetches]
     assert all([isinstance(x, tf.Operation) for x in fetches])
-    from tensorflow.contrib import graph_editor
+    from extern import graph_editor
     all_ops = graph_editor.get_backward_walk_ops(
       fetches, inclusive=True, control_inputs=True, stop_at_ts=tensors)
   else:
@@ -8783,7 +8168,7 @@ def find_ops_with_tensor_input(tensors, fetches=None, graph=None):
 
 def find_ops_path_output_to_input(tensors, fetches):
   """
-  Searches backwards like in :func:`tensorflow.contrib.graph_editor.get_backward_walk_ops`
+  Searches backwards like in :func:`extern.graph_editor.get_backward_walk_ops`
   and then returns a found traceback, if there is one.
 
   :param tf.Tensor|tf.Variable|list[tf.Tensor] tensors: input
@@ -8887,7 +8272,7 @@ def get_variable_grad_from_update_ops(var, update_ops):
   op_inputs = get_op_inputs_by_name(op)
   if op.type == "ScatterSub":  # e.g. sparse grad with GradientDescentOptimizer
     # noinspection PyProtectedMember
-    assert op_inputs["ref"] == var._ref()
+    assert op_inputs["ref"] == var_handle_or_ref(var)
     indices = op_inputs["indices"]
     delta = op_inputs["updates"]
     assert delta.op.type == "Mul"  # mul with learning rate
@@ -8897,11 +8282,11 @@ def get_variable_grad_from_update_ops(var, update_ops):
   if op.type == "AssignSub":
     op_name_prefix = os.path.dirname(op.name) + "/"
     # noinspection PyProtectedMember
-    assert op_inputs["ref"] == var._ref()
+    assert op_inputs["ref"] == var_handle_or_ref(var)
     # Case for sparse update in Adam:
     # m_scaled_g_values = grad * (1 - beta1_t)
     # m_t = scatter_add(m, indices, m_scaled_g_values)
-    from tensorflow.contrib import graph_editor
+    from extern import graph_editor
     all_ops = graph_editor.get_backward_walk_ops(update_ops, inclusive=True, control_inputs=True)
     all_ops = [x for x in all_ops if x.name.startswith(op_name_prefix)]
     scatter_add_ops = [x for x in all_ops if x.type == "ScatterAdd"]
@@ -8915,7 +8300,7 @@ def get_variable_grad_from_update_ops(var, update_ops):
     return tf.IndexedSlices(values=grad, indices=indices, dense_shape=tf.convert_to_tensor(get_shape(var)))
   assert "var" in op_inputs
   # noinspection PyProtectedMember
-  assert op_inputs["var"] == var._ref()
+  assert op_inputs["var"] == var_handle_or_ref(var)
   if "grad" in op_inputs:  # e.g. ApplyAdam
     grad = op_inputs["grad"]
   elif "delta" in op_inputs:  # e.g. ApplyGradientDescent
@@ -8987,6 +8372,7 @@ def string_merge(strings, seq_lens, separator=" "):
   :return: (batch,), string
   :rtype: tf.Tensor
   """
+  import TFCompat
   input_shape = tf.shape(strings)
   n_batch, max_len = input_shape[0], input_shape[1]
   strings = tf.reshape(strings, [n_batch, max_len, 1])
@@ -8995,7 +8381,7 @@ def string_merge(strings, seq_lens, separator=" "):
   strings = tf.reshape(strings, [n_batch, max_len * 2])
   mask = tf.sequence_mask(seq_lens * 2 - 1, maxlen=max_len * 2)  # (batch,)
   strings = tf.where(mask, strings, tf.zeros_like(strings, dtype=tf.string))  # (batch,max_len*2)
-  strings = tf.reduce_join(strings, axis=1)
+  strings = TFCompat.v1.reduce_join(strings, axis=1)
   return strings
 
 
@@ -9011,6 +8397,7 @@ def string_replace(strings, old, new, count=-1):
   :rtype: tf.Tensor
   """
   import numpy
+  import TFCompat
 
   # noinspection PyShadowingNames
   def str_replace(strings, old, new, count):
@@ -9031,7 +8418,7 @@ def string_replace(strings, old, new, count=-1):
     else:
       return strings.replace(old, new, count)
 
-  res, = tf.py_func(
+  res, = TFCompat.v1.py_func(
     str_replace,
     [tf.cast(strings, tf.string),
      tf.cast(old, tf.string),
@@ -9062,7 +8449,8 @@ def words_split(strings):
   :return: sparse tensor of shape (batch,max_len), string
   :rtype: tf.SparseTensor
   """
-  return tf.string_split(strings)
+  import TFCompat
+  return TFCompat.v1.string_split(strings)
 
 
 def get_sparse_tensor_length(x):
@@ -9074,7 +8462,8 @@ def get_sparse_tensor_length(x):
   # x.indices is of shape (N,R), where R==rank(x), and each x.indices[i] is the index entry.
   # So, x.indices[i, -1] is the position.
   # We just do it in a simple way here.
-  mask = tf.sparse_to_dense(
+  import TFCompat
+  mask = TFCompat.v1.sparse_to_dense(
     x.indices, output_shape=x.dense_shape, sparse_values=tf.ones_like(x.values, dtype=tf.int64))  # prefix+(max_len,)
   return tf.reduce_sum(mask, axis=-1)  # prefix
 
@@ -9111,6 +8500,7 @@ def py_print(pass_through_value, print_args, message=None, summarize=None, first
   :return: tf.identity(pass_through_value) with side effect of printing
   :rtype: tf.Tensor
   """
+  import TFCompat
   import numpy
   from numpy.lib import NumpyVersion
   if summarize is None:
@@ -9163,7 +8553,7 @@ def py_print(pass_through_value, print_args, message=None, summarize=None, first
       return False
 
   with tf.name_scope(name):
-    print_op = tf.py_func(_py_print, print_args, tf.bool, name=name)
+    print_op = TFCompat.v1.py_func(_py_print, print_args, tf.bool, name=name)
     with tf.control_dependencies([print_op]):
       return tf.identity(pass_through_value)
 
@@ -9206,12 +8596,12 @@ def get_positional_encoding(num_channels, length=None, position=None, min_timesc
     position = tf.range(length)
   else:
     assert length is None
-  position = tf.to_float(position)
+  position = tf.cast(position, tf.float32)
   num_timescales = num_channels // 2
   log_timescale_increment = (
     math.log(float(max_timescale) / float(min_timescale)) / (float(num_timescales - 1)))
   inv_timescales = min_timescale * tf.exp(
-    tf.to_float(tf.range(num_timescales)) * -log_timescale_increment)
+    tf.cast(tf.range(num_timescales), tf.float32) * -log_timescale_increment)
   scale = tf.reshape(inv_timescales, [1] * len(position.shape) + [num_timescales])  # Usually (1, D//2) or (1, 1, D//2).
   scaled_time = tf.expand_dims(position, -1) * scale
   signal = tf.concat([tf.sin(scaled_time), tf.cos(scaled_time)], axis=-1)
@@ -9323,10 +8713,11 @@ def get_non_deterministic_ops_from_graph():
   :return: list of all non deterministic ops names (depending on device and tf version) used in current graph
   :rtype: list[tf.Operation]
   """
+  import TFCompat
   device_types = {device.device_type for device in get_tf_list_local_devices()}
   non_det_ops = []
   tf_version = tf_version_tuple()
-  for op in tf.get_default_graph().get_operations():
+  for op in TFCompat.v1.get_default_graph().get_operations():
     if op.type == "Mean" and tf_version <= (1, 5, 0) and "GPU" in device_types:
       non_det_ops.append(op)
     elif op.type == "BiasAddGrad" and "GPU" in device_types:
@@ -9349,7 +8740,7 @@ def compute_sampled_logits(weights,
                            subtract_log_q=True,
                            remove_accidental_hits=False,
                            partition_strategy="mod",
-                           name=None,
+                           name="compute_sampled_logits",
                            seed=None):
   """Helper function for nce_loss and sampled_softmax_loss functions.
   Computes sampled output training logits and labels suitable for implementing
@@ -9398,12 +8789,12 @@ def compute_sampled_logits(weights,
       These are the targets. If num_true > 1 the per-example labels are divided by num_true so they sum to 1.0.
   :rtype: (tf.Tensor, tf.Tensor)
   """
+  import TFCompat
 
   if not isinstance(weights, (list, tuple)):
     weights = [weights]
 
-  with tf.name_scope(name, "compute_sampled_logits",
-                     weights + [biases, inputs, labels]):
+  with tf.name_scope(name):
     if labels.dtype != tf.int64:
       labels = tf.cast(labels, tf.int64)
     labels_flat = tf.reshape(labels, [-1])
@@ -9470,7 +8861,7 @@ def compute_sampled_logits(weights,
            tf.expand_dims(num_sampled, 0)], 0)
       if sampled_logits.dtype != acc_weights.dtype:
         acc_weights = tf.cast(acc_weights, sampled_logits.dtype)
-      sampled_logits += tf.sparse_to_dense(
+      sampled_logits += TFCompat.v1.sparse_to_dense(
           sparse_indices,
           sampled_logits_shape,
           acc_weights,
@@ -9478,8 +8869,8 @@ def compute_sampled_logits(weights,
           validate_indices=False)
 
     if subtract_log_q:
-      true_logits -= tf.log(true_expected_count)
-      sampled_logits -= tf.log(sampled_expected_count)
+      true_logits -= TFCompat.v1.log(true_expected_count)
+      sampled_logits -= TFCompat.v1.log(sampled_expected_count)
 
     out_logits = tf.concat([true_logits, sampled_logits], 1)
 
@@ -9509,6 +8900,7 @@ class FetchHelper:
     :param tf.Tensor tensor:
     :param typing.IO[str]|None verbose_stream:
     """
+    import TFCompat
     assert isinstance(tensor, tf.Tensor)
     self.tensor = tensor
     self.verbose_stream = verbose_stream
@@ -9517,7 +8909,7 @@ class FetchHelper:
 
     with same_control_flow_ctx(tensor):
       with tf.device("/cpu:0"):
-        dummy_out, = tf.py_func(
+        dummy_out, = TFCompat.v1.py_func(
           self._callback,
           [tensor],
           [tf.int64],  # dummy return value. will not be used
@@ -9525,7 +8917,7 @@ class FetchHelper:
         assert isinstance(dummy_out, tf.Tensor)
         self.fetch_op = dummy_out.op
 
-      with tf.colocate_with(tensor.op):
+      with TFCompat.v1.colocate_with(tensor.op):
         with tf.control_dependencies([self.fetch_op]):
           self.identity_with_dep = tf.identity(tensor)
 
@@ -9546,7 +8938,7 @@ class FetchHelper:
     from pprint import pformat
     from tensorflow.python.util import nest
     fetches_flat = nest.flatten(fetches)
-    from tensorflow.contrib import graph_editor
+    from extern import graph_editor
     ops = graph_editor.get_backward_walk_ops(
       seed_ops=[x.op if isinstance(x, (tf.Tensor, tf.Variable)) else x for x in fetches_flat],
       stop_at_ts=stop_at_ts,
@@ -9582,7 +8974,7 @@ class FetchHelper:
     :return: as fetches
     :rtype: tf.Tensor|list[tf.Tensor]
     """
-    from tensorflow.contrib import graph_editor
+    from extern import graph_editor
     fetches_copied = graph_editor.graph_replace(
       target_ts=fetches,
       replacement_ts={fetch_helper.tensor: fetch_helper.identity_with_dep for fetch_helper in fetch_helpers},

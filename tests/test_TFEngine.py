@@ -14,6 +14,7 @@ import os
 sys.path += ["."]  # Python 3 hack
 sys.path += [os.path.dirname(os.path.abspath(__file__)) + "/.."]
 
+import TFCompat
 from TFEngine import *
 import TFUtil
 from TFNetwork import ExternData
@@ -42,16 +43,16 @@ except ImportError:
   print("no faulthandler")
 
 
-print("TF version:", tf.VERSION)
+print("TF version:", tf.__version__)
 
 
 @contextlib.contextmanager
 def make_scope():
   """
-  :rtype: tf.Session
+  :rtype: TFCompat.v1.Session
   """
   with tf.Graph().as_default() as graph:
-    with tf.Session(graph=graph) as session:
+    with TFCompat.v1.Session(graph=graph) as session:
       yield session
 
 
@@ -97,17 +98,10 @@ def _cleanup_old_models(config):
       os.remove(fn)
 
 
-session = tf.InteractiveSession()
+session = TFCompat.v1.InteractiveSession()
 
 
-def test_DataProvider():
-  """
-  :param Dataset.Dataset dataset:
-  :param int seq_idx:
-  :param str|None output_layer_name: e.g. "output". if not set, will read from config "forward_output_layer"
-  :return: numpy array, output in time major format (time,batch,dim)
-  :rtype: numpy.ndarray
-  """
+def test_FeedDictDataProvider():
   from GeneratingDataset import DummyDataset
   seq_len = 5
   n_data_dim = 2
@@ -159,6 +153,73 @@ def test_DataProvider():
   assert_equal(classes.tolist(), [[1, 2, 0, 1, 2]])
 
 
+def test_DatasetDataProvider():
+  from GeneratingDataset import DummyDataset
+  seq_len = 5
+  n_data_dim = 2
+  n_classes_dim = 3
+  num_seqs = 5
+  dataset = DummyDataset(input_dim=n_data_dim, output_dim=n_classes_dim, num_seqs=num_seqs, seq_len=seq_len)
+  dataset.init_seq_order(epoch=1)
+
+  n_batch = 2
+  config = Config({
+    "max_seqs": n_batch,
+  })
+
+  with make_scope() as session:
+    extern_data = ExternData()
+    extern_data.init_from_dataset(dataset, auto_create_placeholders=False)
+
+    from TFDataPipeline import DatasetDataProvider
+    data_provider = DatasetDataProvider(
+      extern_data=extern_data, config=config, datasets={"train": dataset})
+
+    input_context = data_provider.contexts["train"]
+    assert isinstance(input_context.final_dataset, tf.data.Dataset)
+    assert input_context.final_dataset_init_iterator_op.graph is session.graph
+
+    data_provider.set_current_dataset(dataset_name="train")
+    data_provider.start_threads(session=session)
+
+    data, data_size, classes, classes_size = session.run([
+      extern_data.data["data"].placeholder,
+      extern_data.data["data"].get_sequence_lengths(),
+      extern_data.data["classes"].placeholder,
+      extern_data.data["classes"].get_sequence_lengths()])
+
+    assert_is_instance(data, numpy.ndarray)
+    assert_is_instance(data_size, numpy.ndarray)
+    assert_is_instance(classes, numpy.ndarray)
+    assert_is_instance(classes_size, numpy.ndarray)
+    assert_equal(data.shape, (n_batch, seq_len, n_data_dim))
+    assert_equal(data_size.shape, (n_batch,))
+    assert_equal(classes.shape, (n_batch, seq_len))
+    assert_equal(classes_size.shape, (n_batch,))
+    assert_equal(list(data_size), [seq_len] * n_batch)
+    assert_equal(list(classes_size), [seq_len] * n_batch)
+    numpy.testing.assert_almost_equal(list(data[0, 0]), [-0.5, -0.4])
+    numpy.testing.assert_almost_equal(list(data[0, -1]), [0.3, 0.4])
+    assert_equal(classes[0].tolist(), [1, 2, 0, 1, 2])
+
+    step = 1  # step 0 was above
+    while True:
+      try:
+        res = session.run(data_provider.iterator_next_element)
+      except tf.errors.OutOfRangeError as exc:
+        print("Got out-of-range (as expected):", exc.message)
+        break
+      print("step %i, res %r" % (step, res))
+      step += 1
+      if step > 10 * num_seqs:
+        break  # should not get here...
+
+    print("Finished after %i steps." % step)
+    assert step == (num_seqs - 1) // n_batch + 1
+
+    data_provider.stop_threads()
+
+
 def test_engine_train():
   from GeneratingDataset import DummyDataset
   seq_len = 5
@@ -183,6 +244,35 @@ def test_engine_train():
   engine.init_train_from_config(config=config, train_data=train_data, dev_data=cv_data, eval_data=None)
   engine.train()
 
+  engine.finalize()
+
+
+def test_engine_train_new_dataset_pipeline():
+  from GeneratingDataset import DummyDataset
+  seq_len = 5
+  n_data_dim = 2
+  n_classes_dim = 3
+  train_data = DummyDataset(input_dim=n_data_dim, output_dim=n_classes_dim, num_seqs=5, seq_len=seq_len)
+  train_data.init_seq_order(epoch=1)
+  cv_data = DummyDataset(input_dim=n_data_dim, output_dim=n_classes_dim, num_seqs=3, seq_len=seq_len)
+  cv_data.init_seq_order(epoch=1)
+
+  config = Config()
+  config.update({
+    "model": "%s/model" % _get_tmp_dir(),
+    "num_outputs": n_classes_dim,
+    "num_inputs": n_data_dim,
+    "network": {"output": {"class": "softmax", "loss": "ce"}},
+    "start_epoch": 1,
+    "num_epochs": 2,
+    "max_seqs": 2,
+    "dataset_pipeline": True
+  })
+  _cleanup_old_models(config)
+  engine = Engine(config=config)
+  engine.init_train_from_config(config=config, train_data=train_data, dev_data=cv_data, eval_data=None)
+  assert engine.dataset_provider
+  engine.train()
   engine.finalize()
 
 
@@ -231,6 +321,61 @@ def test_engine_train_uneven_batches():
   engine.train()
 
   engine.finalize()
+
+
+def test_engine_train_dummy_distributed():
+  import TFDistributed
+  rnd = numpy.random.RandomState(42)
+  from GeneratingDataset import StaticDataset
+  n_data_dim = 2
+  n_classes_dim = 3
+
+  def get_data(num_seqs):
+    return [
+      {
+        "data": rnd.uniform(-1., 1., (seq_len, n_data_dim)).astype("float32"),
+        "classes": rnd.choice(range(n_classes_dim), (seq_len,)).astype("int32")
+      }
+      for seq_len in [rnd.choice(list(range(1, 50)) + list(range(1, 20))) for _ in range(num_seqs)]]
+
+  train_data = StaticDataset(
+    input_dim=n_data_dim, output_dim=n_classes_dim,
+    data=get_data(20))
+  print("train data seq lens:", [len(d["data"]) for d in train_data.data])
+  train_data.init_seq_order(epoch=1)
+  cv_data = StaticDataset(input_dim=n_data_dim, output_dim=n_classes_dim, data=get_data(3))
+  print("cv data seq lens:", [len(d["data"]) for d in cv_data.data])
+  cv_data.init_seq_order(epoch=1)
+
+  config = Config()
+  config.update({
+    "model": "%s/model" % _get_tmp_dir(),
+    "num_outputs": n_classes_dim,
+    "num_inputs": n_data_dim,
+    "network": {
+      "rnn": {"class": "rec", "unit": "lstm", "n_out": 3},  # make it recurrent
+      "output": {"class": "softmax", "loss": "ce", "from": "rnn"}},
+    "start_epoch": 1,
+    "num_epochs": 2,
+    "batch_size": 50,  # set it such that sometimes we have num-seqs 1, 2 or 3 in a single batch
+    "adam": True,
+    "learning_rate": 0.001,
+    "tf_log_memory_usage": True,
+    "log_batch_size": True,
+    "distributed_tf": {"local_only": True},
+  })
+  _cleanup_old_models(config)
+
+  with TFDistributed._temporary_init_distributed_tf(config=config):
+    assert TFDistributed.is_enabled()
+    engine = Engine(config=config)
+    engine.init_train_from_config(config=config, train_data=train_data, dev_data=cv_data, eval_data=None)
+    tf_session = engine.tf_session
+    assert isinstance(tf_session, tf.compat.v1.Session)
+    print("Session uses target:", tf_session.sess_str)
+    assert tf_session.sess_str == TFDistributed.get_session_target().encode("utf8")
+    engine.train()
+    engine.finalize()
 
 
 def test_engine_train_subnet_loss():
@@ -693,7 +838,7 @@ def check_engine_search(extra_rec_kwargs=None):
     assert_equal(set(rec_layer.cell.output_layers_moved_out), {"output", "prob"})
     assert_equal(set(rec_layer.cell.layers_in_loop), set())
   else:
-    assert_equal(set(rec_layer.cell.layers_in_loop), {"prob", "output", "end"})
+    assert_equal(set(rec_layer.cell.layers_in_loop).difference({"data:classes"}), {"prob", "output", "end"})
 
   # Now reinit for search.
   assert not engine.use_search_flag
@@ -1406,7 +1551,7 @@ def deterministic_train_check(layer_opts):
     "start_epoch": 1,
     "num_epochs": 2,
     "batch_size": 10,
-    "nadam": True,
+    "adam": True,
     "learning_rate": 0.01,
     "debug_add_check_numerics_ops": True
   })
@@ -1867,7 +2012,7 @@ def test_rec_subnet_eval_init_out_apply0():
     "start_epoch": 1,
     "num_epochs": 2,
     "batch_size": 10,
-    "nadam": True,
+    "adam": True,
     "learning_rate": 0.01,
     "debug_print_layer_output_template": True
   })
@@ -3113,7 +3258,7 @@ if __name__ == "__main__":
   finally:
     try:
       session.close()
-      tf.reset_default_graph()
+      TFCompat.v1.reset_default_graph()
     except Exception as exc:
       print("test finally handler, exception:", type(exc).__name__, ":", exc)
     import threading
