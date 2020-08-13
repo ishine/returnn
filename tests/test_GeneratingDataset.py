@@ -1,25 +1,21 @@
 # -*- coding: utf8 -*-
 
 from __future__ import print_function
-import os
-import sys
 
-my_dir = os.path.dirname(os.path.realpath(__file__))
-sys.path += [my_dir + "/.."]  # Python 3 hack
-
+import _setup_test_env  # noqa
 import unittest
 from nose.tools import assert_equal, assert_is_instance, assert_in, assert_not_in, assert_true, assert_false
-from GeneratingDataset import *
-from Dataset import DatasetSeq
-from Util import PY3, unicode
+from returnn.datasets.generating import *
+from returnn.datasets.basic import DatasetSeq
+from returnn.util.basic import PY3, unicode
 import os
 import unittest
 
-import better_exchook
-better_exchook.replace_traceback_format_tb()
-from Log import log
-log.initialize(verbosity=[5])
+from returnn.util import better_exchook
+from returnn.log import log
 
+
+my_dir = os.path.dirname(os.path.realpath(__file__))
 
 
 def test_init():

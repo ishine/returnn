@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 
+"""
+Dump translation dataset to HDF.
+"""
+
+from __future__ import print_function
+
 import sys
 import argparse
 import gzip
 import pickle
+import typing
 
 import numpy
 import h5py
@@ -61,9 +68,11 @@ class HDFTranslationDatasetCreator(object):
     self.target_data_keys = ["classes"] + target_factors
 
     self._vocabularies = {"source": source_vocabularies, "target": target_vocabularies}
-    self._vocabulary_sizes = {"source": [len(v) for v in source_vocabularies],
+    self._vocabulary_sizes = {
+      "source": [len(v) for v in source_vocabularies],
       "target": [len(v) for v in target_vocabularies]}
-    self._unknown_ids = {"source": [v.get(UNKNOWN_LABEL) for v in source_vocabularies],
+    self._unknown_ids = {
+      "source": [v.get(UNKNOWN_LABEL) for v in source_vocabularies],
       "target": [v.get(UNKNOWN_LABEL) for v in target_vocabularies]}
 
     self.number_of_lines = number_of_lines
@@ -164,7 +173,8 @@ class HDFTranslationDatasetCreator(object):
         labels = [numpy.array(label, dtype=dtype, ndmin=1) for label in labels]
         labels = numpy.concatenate(labels)
 
-        self.hdf_file["targets/labels"].create_dataset(data_key, (self._vocabulary_sizes[side][index],),
+        self.hdf_file["targets/labels"].create_dataset(
+          data_key, (self._vocabulary_sizes[side][index],),
           data=labels, dtype=dtype)
 
   def _write_data(self):
@@ -227,7 +237,6 @@ class HDFTranslationDatasetCreator(object):
     :param list[int] target_lengths: lengths of all target lines in current chunk
     """
     # We treat source factors as targets internally because HDF format does not support multiple inputs.
-    target_data_keys = self.source_data_keys[1:] + self.target_data_keys
 
     # For each sequence, seqLengths is expected to contain the length of the input and the length of each of the
     # targets, in alphabetical order of the target data keys. As all source and all target factors share the
@@ -239,7 +248,7 @@ class HDFTranslationDatasetCreator(object):
       target_sequence_lengths[data_key] = target_lengths
 
     # Now sort by key.
-    key_lengths_tuples_sorted = sorted(target_sequence_lengths.items(), key=lambda x: x[0])
+    key_lengths_tuples_sorted = sorted(target_sequence_lengths.items(), key=lambda x: x[0])  # type: typing.List[typing.Tuple[str,typing.List[int]]]  # nopep8
     target_lengths_sorted = [key_length_tuple[1] for key_length_tuple in key_lengths_tuples_sorted]
 
     # Finally, add one time the source lengths for the input ("data") and convert to numpy.
@@ -293,8 +302,9 @@ class HDFTranslationDatasetCreator(object):
     """
     # Make sure the number of lines given by the user was correct.
     # Otherwise lengths and labels would have trailing zeros.
-    assert self.number_of_lines == self._number_of_processed_lines, "Fewer lines ({}) in the corpus files " \
-      "than specified ({}).".format(self._number_of_processed_lines, self.number_of_lines)
+    assert self.number_of_lines == self._number_of_processed_lines, (
+      "Fewer lines ({}) in the corpus files "
+      "than specified ({}).".format(self._number_of_processed_lines, self.number_of_lines))
 
     # Trim datasets to actually occupied length, i.e. remove unused reserved space.
     self.hdf_file["inputs"].resize((self._write_offsets["data"],))
@@ -360,30 +370,41 @@ class HDFTranslationDatasetCreator(object):
 
 
 def parse_args():
+  """
+  :rtype: argparse.Namespace
+  """
   parser = argparse.ArgumentParser()
   parser.add_argument("-s", "--source_corpus", required=True, help="Source corpus file, possibly zipped.")
   parser.add_argument("-t", "--target_corpus", required=True, help="Target corpus file, possibly zipped.")
-  parser.add_argument("-v", "--source_vocabulary", required=True, help="Source vocabulary in pickle format."
+  parser.add_argument(
+    "-v", "--source_vocabulary", required=True, help="Source vocabulary in pickle format."
     "In case of source factors provide a comma separated list containing vocabularies for each factor.")
-  parser.add_argument("-w", "--target_vocabulary", required=True, help="Target vocabulary in pickle format."
+  parser.add_argument(
+    "-w", "--target_vocabulary", required=True, help="Target vocabulary in pickle format."
     "In case of target factors provide a comma separated list containing vocabularies for each factor.")
   parser.add_argument("-o", "--hdf_file", required=True, help="Output HDF file name.")
   parser.add_argument("--source_factors", help="Comma separated list of data keys for the source factors.")
   parser.add_argument("--target_factors", help="Comma separated list of data keys for the target factors.")
-  parser.add_argument("--factor_separator", default="|",
+  parser.add_argument(
+    "--factor_separator", default="|",
     help="String used to separate factors of the words, E.g. if '|', words are expected to be "
-      "of format '<lemma>|<factor>|...'")
-  parser.add_argument("-n", "--number_of_lines", required=True, type=int,
+    "of format '<lemma>|<factor>|...'")
+  parser.add_argument(
+    "-n", "--number_of_lines", required=True, type=int,
     help="The number of total lines in the corpus files.")
   parser.add_argument("-c", "--compression", help="Type of compression (e.g. 'gzip', 'lzf'). Turned off if not given.")
   parser.add_argument("-l", "--line_buffer_size", type=int, help="How many lines to read at once.", default=100000)
-  parser.add_argument("-d", "--data_buffer_size", type=int, help="How much space to reserve in the HDF dataset "
+  parser.add_argument(
+    "-d", "--data_buffer_size", type=int, help="How much space to reserve in the HDF dataset "
     "at once (in number of integers).", default=5000000)
 
   return parser.parse_args()
 
 
 def main():
+  """
+  Main entry.
+  """
   args = parse_args()
 
   # In case of source or target factors we need a vocabularies for each.
@@ -393,13 +414,17 @@ def main():
   source_factors = args.source_factors.split(",") if args.source_factors else []
   target_factors = args.target_factors.split(",") if args.target_factors else []
 
-  assert len(source_factors) + 1 == len(source_vocabularies), ("Number of source factors must be one less "
+  assert len(source_factors) + 1 == len(source_vocabularies), (
+    "Number of source factors must be one less "
     "than number of source vocabularies (first factor is always called 'data')")
-  assert len(target_factors) + 1 == len(target_vocabularies), ("Number of target factors must be one less "
+  assert len(target_factors) + 1 == len(target_vocabularies), (
+    "Number of target factors must be one less "
     "than number of target vocabularies (first factor is always called 'classes')")
 
-  HDFTranslationDatasetCreator(args.hdf_file, args.source_corpus, args.target_corpus,
-    source_vocabularies, target_vocabularies, source_factors, target_factors, args.number_of_lines, args.factor_separator,
+  HDFTranslationDatasetCreator(
+    args.hdf_file, args.source_corpus, args.target_corpus,
+    source_vocabularies, target_vocabularies, source_factors, target_factors, args.number_of_lines,
+    args.factor_separator,
     args.compression, args.line_buffer_size, args.data_buffer_size).create()
 
 

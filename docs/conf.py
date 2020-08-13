@@ -11,12 +11,16 @@
 
 import sys
 import os
+
+if not os.path.exists("returnn"):
+  os.symlink("../returnn", "returnn")
+
 sys.path += [".", "returnn"]
 
 import faulthandler
 faulthandler.enable()
 
-import better_exchook
+from returnn.util import better_exchook
 better_exchook.install()
 
 import logging
@@ -153,7 +157,7 @@ def linkcode_resolve(domain, info):
     except Exception:
         filename = info['module'].replace('.', '/') + '.py'
     tag = 'master' if 'dev' in release else ('v' + release)
-    return "https://github.com/rwth-i6/returnn/blob/%s/%s" % (tag, filename)
+    return "https://github.com/rwth-i6/returnn/blob/%s/returnn/%s" % (tag, filename)
 
 
 # -- Options for HTML output ----------------------------------------------

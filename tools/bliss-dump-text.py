@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 
+"""
+Goes through a Sprint Bliss XML, and dumps all the orthography on stdout.
+"""
+
 from __future__ import print_function
 
-import os
-import sys
 from argparse import ArgumentParser
 
-my_dir = os.path.dirname(os.path.abspath(__file__))
-returnn_dir = os.path.dirname(my_dir)
-sys.path.insert(0, returnn_dir)
+import _setup_returnn_env  # noqa
 
 # noinspection PyProtectedMember
-from LmDataset import _iter_bliss
+from returnn.datasets.lm import _iter_bliss
 
 
 def main():
+  """
+  Main entry.
+  """
   parser = ArgumentParser(description="dump orth from Bliss XML file as-is")
   parser.add_argument("xml")
   args = parser.parse_args()
@@ -30,6 +33,6 @@ def main():
 
 
 if __name__ == '__main__':
-  import better_exchook
+  from returnn.util import better_exchook
   better_exchook.install()
   main()

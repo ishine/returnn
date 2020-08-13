@@ -14,12 +14,10 @@ from nose.tools import assert_not_equal
 from nose.tools import assert_raises
 from nose.tools import raises
 
-sys.path += ["."]  # Python 3 hack
-sys.path += [os.path.dirname(os.path.abspath(__file__)) + "/.."]
-
-import better_exchook
-from LmDataset import TranslationDataset, TranslationFactorsDataset
-from Util import init_thread_join_hack
+import _setup_test_env  # noqa
+from returnn.util import better_exchook
+from returnn.datasets.lm import TranslationDataset, TranslationFactorsDataset
+from returnn.util.basic import init_thread_join_hack
 
 better_exchook.install()
 better_exchook.replace_traceback_format_tb()

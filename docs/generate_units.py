@@ -1,6 +1,6 @@
 import os
-from TFNetworkRecLayer import RecLayer
-from TFNativeOp import RecSeqCellOp
+from returnn.tf.layers.rec import RecLayer
+from returnn.tf.native_op import RecSeqCellOp
 from tensorflow.python.ops.rnn_cell_impl import RNNCell
 
 header_text = """
@@ -26,9 +26,6 @@ A performance comparison of the different LSTM Layers is available :ref:`here <t
 
 
 def generate():
-  if not os.path.exists("returnn"):
-    os.symlink("..", "returnn")
-
   RecLayer._create_rnn_cells_dict()
   layer_names = sorted(list(RecLayer._rnn_cells_dict.keys()))
 

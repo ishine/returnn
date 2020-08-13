@@ -1,10 +1,9 @@
 
 from __future__ import print_function
 
-# Disable extensive TF debug verbosity. Must come before the first TF import.
-import logging
-logging.getLogger('tensorflow').disabled = True
+import _setup_test_env  # noqa
 
+import logging
 import sys
 import os
 import os.path
@@ -13,24 +12,21 @@ import numpy as np
 import unittest
 import contextlib
 
-# Allow Returnn imports.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + "/..")
+from returnn.tf.network import *
+from returnn.tf.layers.signal_processing import *
+from returnn.config import Config
 
-from TFNetwork import *
-from TFNetworkSigProcLayer import *
-from Config import Config
-
-import better_exchook
+from returnn.util import better_exchook
 better_exchook.replace_traceback_format_tb()
 
 
 @contextlib.contextmanager
 def make_scope():
   """
-  :rtype: TFCompat.v1.Session
+  :rtype: tf.compat.v1.Session
   """
   with tf.Graph().as_default() as graph:
-    with TFCompat.v1.Session(graph=graph) as session:
+    with tf_compat.v1.Session(graph=graph) as session:
       yield session
 
 
